@@ -4,8 +4,9 @@
 
 ## Первое действие в каждой сессии
 
-1. Прочитать **[ROADMAP.md](./ROADMAP.md)** — фазы, блокеры, acceptance criteria.
-2. Прочитать **[Autoro/Strategy/Unified Knowledge Base Plan.md](./Autoro/Strategy/Unified%20Knowledge%20Base%20Plan.md)**.
+1. Прочитать **[docs/ANTIGRAVITY-INFRA-BRIEF.md](./docs/ANTIGRAVITY-INFRA-BRIEF.md)** — БД, env, UI, Tauri, extension.
+2. Прочитать **[ROADMAP.md](./ROADMAP.md)** — фазы, блокеры, acceptance criteria.
+3. Прочитать **[Autoro/Strategy/Unified Knowledge Base Plan.md](./Autoro/Strategy/Unified%20Knowledge%20Base%20Plan.md)**.
 3. При работе с API — grep `bookmarks` / `knowledge` в `agent-api/main.py`.
 4. При работе с Obsidian — search vault: `Bookmarks Bro`, `Unified Knowledge Base`.
 

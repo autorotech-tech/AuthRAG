@@ -32,6 +32,7 @@ cd extensions/bookmarks-bro && zip -r ../bookmarks-bro.zip .
 
 ## Документация
 
+- [docs/ANTIGRAVITY-INFRA-BRIEF.md](./docs/ANTIGRAVITY-INFRA-BRIEF.md) — **инфра + UI + extension для Antigravity**
 - [ROADMAP.md](./ROADMAP.md) — фазы, критерии, задачи для агента
 - [docs/bookmarks-bro/TESTING.md](./docs/bookmarks-bro/TESTING.md)
 - [docs/bookmarks-bro/ADMIN-MULTIUSER.md](./docs/bookmarks-bro/ADMIN-MULTIUSER.md)
