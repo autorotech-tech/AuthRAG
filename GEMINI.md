@@ -1,14 +1,15 @@
-# GEMINI.md — Antigravity для AuthRAG / Bookmarks Bro
+# GEMINI.md — Antigravity для AuthRAG / Keep It For Me (`keept.me`)
 
 Настройки для **Google Antigravity** в репозитории [autorotech-tech/AuthRAG](https://github.com/autorotech-tech/AuthRAG).
 
+**Codename:** BrowserBro · **Product:** Keep It For Me · **Domain:** keept.me · **Legacy code paths:** Bookmarks Bro
+
 ## Первое действие в каждой сессии
 
-1. Прочитать **[docs/ANTIGRAVITY-INFRA-BRIEF.md](./docs/ANTIGRAVITY-INFRA-BRIEF.md)** — БД, env, UI, Tauri, extension.
-2. Прочитать **[ROADMAP.md](./ROADMAP.md)** — фазы, блокеры, acceptance criteria.
-3. Прочитать **[Autoro/Strategy/Unified Knowledge Base Plan.md](./Autoro/Strategy/Unified%20Knowledge%20Base%20Plan.md)**.
-3. При работе с API — grep `bookmarks` / `knowledge` в `agent-api/main.py`.
-4. При работе с Obsidian — search vault: `Bookmarks Bro`, `Unified Knowledge Base`.
+1. Прочитать **[docs/ANTIGRAVITY-KEEPT-BRIEF.md](./docs/ANTIGRAVITY-KEEPT-BRIEF.md)** — бренд, Phase 1 locked decisions, naming rules.
+2. Прочитать **[docs/ANTIGRAVITY-SWOOP-KEEPT.md](./docs/ANTIGRAVITY-SWOOP-KEEPT.md)** — Swoop tools, multi-user, personal Telegram bot.
+3. Прочитать **[docs/ANTIGRAVITY-INFRA-BRIEF.md](./docs/ANTIGRAVITY-INFRA-BRIEF.md)** — БД, env, UI, Tauri, extension.
+4. Прочитать **[ROADMAP.md](./ROADMAP.md)** — фазы, блокеры, acceptance criteria.
 
 ## Ветка и remotes
 

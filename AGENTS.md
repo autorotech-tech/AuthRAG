@@ -15,8 +15,11 @@
 ## Обязательно читать перед кодом
 
 1. [ROADMAP.md](./ROADMAP.md)
-2. [GEMINI.md](./GEMINI.md) — если Antigravity
-3. [docs/bookmarks-bro/ADMIN-MULTIUSER.md](./docs/bookmarks-bro/ADMIN-MULTIUSER.md) — при auth/workspace
+2. [docs/ANTIGRAVITY-KEEPT-BRIEF.md](./docs/ANTIGRAVITY-KEEPT-BRIEF.md) — **BrowserBro / Keep It For Me (`keept.me`)**
+3. [docs/ANTIGRAVITY-SWOOP-KEEPT.md](./docs/ANTIGRAVITY-SWOOP-KEEPT.md) — Swoop tools, multi-user, Telegram
+4. [docs/ANTIGRAVITY-INFRA-BRIEF.md](./docs/ANTIGRAVITY-INFRA-BRIEF.md) — инфраструктура
+4. [GEMINI.md](./GEMINI.md) — если Antigravity
+5. [docs/bookmarks-bro/ADMIN-MULTIUSER.md](./docs/bookmarks-bro/ADMIN-MULTIUSER.md) — при auth/workspace
 
 ## Ограничения
 
