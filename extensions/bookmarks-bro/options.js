@@ -87,7 +87,7 @@ async function testConnection() {
     throw new Error(data?.detail || `HTTP ${response.status}`);
   }
 
-  let uiStateLine = 'UI state: не проверялся';
+  let uiStateLine = 'UI state: not checked';
   try {
     const ui = await bbPingWorkspaceUiState(apiBase, workspaceId, token);
     const ideas = Array.isArray(ui?.ideas) ? ui.ideas.length : 0;
@@ -117,7 +117,7 @@ ensureBtn.addEventListener('click', async () => {
   ensureBtn.disabled = true;
   try {
     const { workspaceId, workspaceName } = await resolveWorkspace();
-    setStatus(`Workspace: id=${workspaceId}, name=${workspaceName}\nСохранено в storage.`);
+    setStatus(`Workspace: id=${workspaceId}, name=${workspaceName}\nSaved to storage.`);
   } catch (error) {
     setStatus(`Resolve failed: ${error.message || error}`);
   } finally {
@@ -131,8 +131,8 @@ testBtn.addEventListener('click', async () => {
     const auth = await chrome.storage.local.get(['userAccessToken', 'userEmail']);
     const hasUser = Boolean(auth.userAccessToken?.trim?.());
     const signedInHint = hasUser
-      ? `Сессия пользователя: ${String(auth.userEmail || 'вход выполнен')}.`
-      : 'Вход в popup не выполнен — bootstrap гостевой.';
+      ? `User session: ${String(auth.userEmail || 'signed in')}.`
+      : 'Not signed in via popup — using guest bootstrap.';
 
     const ws = workspaceIdInput.value.trim();
     const { data, uiStateLine } = await testConnection();
@@ -159,9 +159,9 @@ logoutBtn.addEventListener('click', async () => {
     'accessToken',
     'tokenExpiresAt',
   ]);
-  setStatus('Signed out. Войдите снова из popup.');
+  setStatus('Signed out. Please sign in again from popup.');
 });
 
 loadSettings()
-  .then(() => setStatus('Сохраните настройки, при необходимости Resolve workspace и Test Connection.'))
+  .then(() => setStatus('Save settings, then Resolve workspace and run Test Connection if needed.'))
   .catch((error) => setStatus(`Init failed: ${error.message || error}`));

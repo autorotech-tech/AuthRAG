@@ -228,6 +228,7 @@ async def _app_lifespan(app: FastAPI):
         ensure_bookmarks_bro_ui_workspace_schema()
         ensure_service_settings_schema()
         ensure_expired_domains_schema()
+        ensure_telegram_assistant_schema()
     except Exception as exc:
         logger.warning("Bookmarks schema bootstrap skipped (DB unreachable?): %s", exc)
     yield
@@ -535,7 +536,7 @@ def verify_bookmarks_access(
 
     if x_api_key:
         stored_key = settings.get("agent_api_key", "")
-        if stored_key and x_api_key == stored_key:
+        if (stored_key and x_api_key == stored_key) or (TELEGRAM_WEBHOOK_SECRET and x_api_key == TELEGRAM_WEBHOOK_SECRET):
             if not check_rate_limit(client_ip, limit):
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded ({limit}/min)")
             return {"client_ip": client_ip, "auth_mode": "api_key"}
@@ -543,7 +544,7 @@ def verify_bookmarks_access(
     if authorization and authorization.lower().startswith("bearer "):
         token = authorization.split(" ", 1)[1].strip()
         stored_key = settings.get("agent_api_key", "")
-        if stored_key and token == stored_key:
+        if (stored_key and token == stored_key) or (TELEGRAM_WEBHOOK_SECRET and token == TELEGRAM_WEBHOOK_SECRET):
             if not check_rate_limit(client_ip, limit):
                 raise HTTPException(status_code=429, detail=f"Rate limit exceeded ({limit}/min)")
             return {"client_ip": client_ip, "auth_mode": "api_key"}
@@ -570,6 +571,36 @@ def verify_bookmarks_access(
             pass
 
     raise HTTPException(status_code=401, detail="Missing or invalid authentication")
+
+
+def verify_workspace_membership(auth_ctx: Dict[str, Any], workspace_id: int) -> None:
+    """Checks if the user has access to this workspace. Autoro Ops (api_key/dev_bypass) bypasses."""
+    auth_mode = auth_ctx.get("auth_mode")
+    user_id = auth_ctx.get("user_id")
+    
+    if auth_mode in ("dev_bypass", "api_key", "env_api_key"):
+        return
+        
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: No user identity found")
+        
+    conn = pg_connect_bookmarks()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT owner_id FROM public.workspaces WHERE id = %s", (workspace_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Workspace not found")
+            owner_id = str(row[0]) if row[0] is not None else None
+            if owner_id != user_id:
+                raise HTTPException(status_code=403, detail="Forbidden: You do not have access to this workspace")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to verify workspace membership: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to verify workspace membership")
+    finally:
+        conn.close()
 
 
 def verify_hermes_agent_access(
@@ -701,6 +732,17 @@ class BookmarkCapturePayload(BaseModel):
     source: str = Field(default="telegram", max_length=64)
 
 
+class CompleteTelegramLinkPayload(BaseModel):
+    code: str
+    telegramUserId: str
+    chatId: str
+
+
+class SaveTelegramBotTokenPayload(BaseModel):
+    workspaceId: str
+    botToken: str
+
+
 class BookmarkSearchPayload(BaseModel):
     workspaceId: str = Field(..., min_length=1, max_length=64)
     query: str = Field(..., min_length=1, max_length=1000)
@@ -748,6 +790,11 @@ class BookmarkAiRecommendPayload(BaseModel):
         description="bookmarks | web_research | web | hybrid | fast | deep",
     )
     webLimit: int = Field(default=8, ge=3, le=20, description="Сколько внешних источников добавить в кандидаты")
+    llm_provider: Optional[str] = Field(default=None, max_length=64)
+    llm_model: Optional[str] = Field(default=None, max_length=255)
+    depth: Optional[str] = Field(default="quick", description="quick | deep")
+    autonomy: Optional[str] = Field(default="answer", description="answer | suggest | act")
+
 
 
 class HermesAgentRunPayload(BaseModel):
@@ -1036,13 +1083,37 @@ def telegram_chat_workspace_map() -> Dict[str, int]:
         return {}
 
 
-def resolve_telegram_workspace_id(chat_id: Optional[Any]) -> int:
+def resolve_telegram_workspace_id(chat_id: Optional[Any], telegram_user_id: Optional[Any] = None) -> Optional[int]:
+    conn = pg_connect_bookmarks()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT to_regclass('public.telegram_workspace_links')::text")
+            row = cur.fetchone()
+            table_exists = bool(row and row[0])
+            if table_exists:
+                if chat_id is not None:
+                    cur.execute("SELECT workspace_id FROM public.telegram_workspace_links WHERE chat_id = %s", (str(chat_id),))
+                    row = cur.fetchone()
+                    if row:
+                        return int(row[0])
+                if telegram_user_id is not None:
+                    cur.execute("SELECT workspace_id FROM public.telegram_workspace_links WHERE telegram_user_id = %s", (str(telegram_user_id),))
+                    row = cur.fetchone()
+                    if row:
+                        return int(row[0])
+    except Exception as exc:
+        logger.warning("Failed to query telegram_workspace_links: %s", exc)
+    finally:
+        conn.close()
+
     mapping = telegram_chat_workspace_map()
     if chat_id is not None:
         mapped = mapping.get(str(chat_id))
         if mapped:
             return mapped
-    return TELEGRAM_DEFAULT_WORKSPACE_ID
+            
+    # Default fallback if unlinked
+    return None
 
 
 _KB_SPURIOUS_URL_PARTS = (
@@ -1636,7 +1707,7 @@ def gemini_grounded_web_search(api_key: str, query: str, limit: int = 8) -> List
         "contents": [
             {
                 "role": "user",
-                "parts": [{"text": f"Найди в интернете актуальные страницы по запросу: {q}"}],
+                "parts": [{"text": f"Find relevant and up-to-date web pages for the query: {q}"}],
             }
         ],
         "tools": [{"google_search": {}}],
@@ -2070,6 +2141,54 @@ def ensure_bookmarks_token_usage_schema() -> None:
         conn.close()
 
 
+def ensure_telegram_assistant_schema() -> None:
+    conn = pg_connect_bookmarks()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                create table if not exists public.telegram_link_codes (
+                  code text primary key,
+                  user_id uuid not null,
+                  workspace_id bigint not null references public.workspaces(id) on delete cascade,
+                  expires_at timestamptz not null,
+                  created_at timestamptz not null default now()
+                )
+                """
+            )
+            cur.execute(
+                """
+                create table if not exists public.telegram_workspace_links (
+                  telegram_user_id text not null,
+                  chat_id text primary key,
+                  workspace_id bigint not null references public.workspaces(id) on delete cascade,
+                  user_id uuid not null,
+                  linked_at timestamptz not null default now()
+                )
+                """
+            )
+            cur.execute(
+                """
+                create table if not exists public.user_telegram_bots (
+                  workspace_id bigint primary key references public.workspaces(id) on delete cascade,
+                  user_id uuid not null,
+                  bot_token_encrypted text not null,
+                  bot_username text not null,
+                  webhook_secret text not null,
+                  status text not null default 'active',
+                  created_at timestamptz not null default now(),
+                  updated_at timestamptz not null default now()
+                )
+                """
+            )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        logger.warning("Failed to ensure telegram assistant schema: %s", exc)
+    finally:
+        conn.close()
+
+
 def ensure_service_settings_schema() -> None:
     conn = pg_connect()
     try:
@@ -2128,6 +2247,129 @@ def _truncate_text(value: str, max_len: int) -> str:
     return value[: max_len - 3] + "..."
 
 
+_TAGS_SCHEMA_CACHE = None
+
+def get_tags_schema() -> dict:
+    global _TAGS_SCHEMA_CACHE
+    if _TAGS_SCHEMA_CACHE is not None:
+        return _TAGS_SCHEMA_CACHE
+    
+    schema_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "schemas", "categories.json")
+    schema_path = os.path.abspath(schema_path)
+    
+    default_schema = {
+        "categories": ["general", "ai-ml", "dev-tools", "marketing", "business", "design", "prompt", "article", "note", "link", "task"],
+        "tag_aliases": {
+            "agents": "agent",
+            "tools": "tool",
+            "startups": "startup",
+            "libraries": "library",
+            "apis": "api",
+            "embeddings": "embedding",
+            "vectors": "vector",
+            "databases": "database",
+            "notes": "note",
+            "bookmarks": "bookmark",
+            "reminders": "reminder",
+            "ideas": "idea",
+            "workflows": "workflow",
+            "pipelines": "pipeline",
+            "categories": "category",
+            "tags": "tag",
+            "models": "model",
+            "methods": "method",
+            "algorithms": "algorithm",
+            "llms": "llm",
+            "webhooks": "webhook",
+            "integrations": "integration",
+            "prompts": "prompt",
+            "searches": "search",
+            "results": "result",
+            "tokens": "token",
+            "keys": "key",
+            "users": "user",
+            "members": "member",
+            "roles": "role",
+            "workspaces": "workspace",
+            "servers": "server",
+            "extensions": "extension",
+            "browsers": "browser",
+            "configs": "config",
+            "strategies": "strategy",
+            "frameworks": "framework",
+            "packages": "package",
+            "scripts": "script",
+            "files": "file",
+            "folders": "folder",
+            "documents": "document",
+            "pages": "page",
+            "metrics": "metric"
+        }
+    }
+    
+    if os.path.exists(schema_path):
+        try:
+            with open(schema_path, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    _TAGS_SCHEMA_CACHE = loaded
+                    return loaded
+        except Exception as e:
+            logger.warning("Failed to load tag schema from %s: %s", schema_path, e)
+            
+    _TAGS_SCHEMA_CACHE = default_schema
+    return default_schema
+
+def normalize_single_tag(tag: str, aliases: dict) -> str:
+    t = str(tag).strip().lower()
+    t = re.sub(r'[\s_]+', '-', t)
+    t = re.sub(r'[^a-z0-9\-]', '', t)
+    if not t:
+        return ""
+    
+    if t in aliases:
+        return aliases[t]
+    
+    EXEMPT_SINGULARS = {
+        "postgres", "kubernetes", "redis", "js", "ts", "css", "os", "dns", "status", "analysis", "business", "class", "mass", "access", "process", "aws", "gcp"
+    }
+    
+    if t in EXEMPT_SINGULARS:
+        return t
+        
+    if t.endswith("ies") and len(t) > 3:
+        candidate = t[:-3] + "y"
+        if candidate in aliases:
+            return aliases[candidate]
+        return candidate
+    elif t.endswith("es") and len(t) > 2:
+        if t.endswith("ses") or t.endswith("ches") or t.endswith("shes") or t.endswith("xes"):
+            candidate = t[:-2]
+        else:
+            candidate = t[:-1]
+        if candidate in aliases:
+            return aliases[candidate]
+        return candidate
+    elif t.endswith("s") and not t.endswith("ss") and len(t) > 2:
+        candidate = t[:-1]
+        if candidate in aliases:
+            return aliases[candidate]
+        return candidate
+        
+    return t
+
+def normalize_tags(tags: list) -> list:
+    if not tags:
+        return []
+    schema = get_tags_schema()
+    aliases = schema.get("tag_aliases", {})
+    normalized = []
+    for t in tags:
+        norm = normalize_single_tag(t, aliases)
+        if norm and norm not in normalized:
+            normalized.append(norm)
+    return normalized
+
 def infer_category(url: str, title: str, content_text: str) -> str:
     source = f"{url} {title} {content_text}".lower()
     rules = {
@@ -2153,12 +2395,13 @@ def infer_tags(url: str, title: str, content_text: str, category: str) -> List[s
     tags = [t for t in tag_candidates if t in source]
     if category not in tags:
         tags.insert(0, category)
-    return tags[:6]
+    return normalize_tags(tags)[:6]
 
 
 def local_enrich_bookmark(url: str, title: str, content_text: str) -> Dict[str, Any]:
     category = infer_category(url, title, content_text)
     tags = infer_tags(url, title, content_text, category)
+    tags = normalize_tags(tags)
     raw = (content_text or "").replace("\n", " ").strip()
     if not raw:
         summary = _truncate_text(f"{title}. Bookmark imported from {url}.", 280)
@@ -4442,6 +4685,7 @@ def ai_enrich_bookmark(url: str, title: str, content_text: str) -> Optional[Dict
                 tags.append(t.strip()[:48])
     if not tags:
         tags = infer_tags(url, title, content_text, cat)
+    tags = normalize_tags(tags)
     return {"summary": summary, "category": cat, "tags": tags[:6]}
 
 
@@ -4661,6 +4905,7 @@ def ai_enrich_knowledge(
                 tags.append(t.strip().lower()[:48])
     if not tags:
         tags = infer_tags(url, title, content_text, cat)
+    tags = normalize_tags(tags)
     return {
         "title": new_title,
         "summary": summary,
@@ -4740,7 +4985,7 @@ def finalize_knowledge_capture_fields(
     if _looks_like_user_kb_command(out_summary) and page_blob:
         out_summary = _summary_from_fetched_page(page_blob, canonical_url, out_title)
     out_category = _truncate_text(str(enriched.get("category") or category).strip().lower(), 128) or category
-    out_tags = [str(t).strip().lower() for t in (enriched.get("tags") or tags) if str(t).strip()]
+    out_tags = normalize_tags(enriched.get("tags") or tags)
     if out_category and out_category not in out_tags:
         out_tags.insert(0, out_category)
     out_tags = list(dict.fromkeys(out_tags))[:12]
@@ -5743,6 +5988,366 @@ async def telegram_webhook_setup_autoro_gateway(
         raise HTTPException(status_code=502, detail=f"Failed to setup telegram autoro-gateway webhook: {exc}")
 
 
+def verify_internal_access(request: Request, x_api_key: Optional[str], authorization: Optional[str]):
+    if str(os.environ.get("AGENT_API_DEV_BYPASS_AUTH", "0")).strip().lower() in ("1", "true", "yes", "on"):
+        return
+    key = x_api_key or (authorization.split(" ", 1)[1] if authorization and authorization.lower().startswith("bearer ") else None)
+    if not key:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    settings = load_agent_settings()
+    admin_key = settings.get("agent_api_key", "")
+    if (admin_key and key == admin_key) or (TELEGRAM_WEBHOOK_SECRET and key == TELEGRAM_WEBHOOK_SECRET):
+        return
+    raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+@app.post("/api/v1/keept/telegram/link-code")
+async def generate_telegram_link_code(
+    request: Request,
+    workspaceId: str = Query(...),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
+    user_id = auth_ctx.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: User identity required")
+    
+    workspace_id = parse_required_workspace_id(workspaceId)
+    verify_workspace_membership(auth_ctx, workspace_id)
+    
+    import random
+    import string
+    code = "KEEPT-" + "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=10)
+    
+    conn = pg_connect_bookmarks()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM public.telegram_link_codes WHERE workspace_id = %s OR user_id = %s", (workspace_id, user_id))
+            cur.execute(
+                """
+                INSERT INTO public.telegram_link_codes (code, user_id, workspace_id, expires_at)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (code, user_id, workspace_id, expires_at)
+            )
+        conn.commit()
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Failed to generate telegram link code: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to generate link code")
+    finally:
+        conn.close()
+        
+    bot_username = os.environ.get("TELEGRAM_BOT_USERNAME", "KeeptMeBot")
+    return {"code": code, "botUsername": bot_username, "expiresAt": expires_at.isoformat()}
+
+
+@app.post("/api/v1/keept/telegram/complete-link")
+async def complete_telegram_link(
+    payload: CompleteTelegramLinkPayload,
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    verify_internal_access(request, x_api_key, authorization)
+    code = payload.code.strip()
+    tg_user_id = str(payload.telegramUserId).strip()
+    chat_id = str(payload.chatId).strip()
+    
+    conn = pg_connect_bookmarks()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT user_id, workspace_id, expires_at FROM public.telegram_link_codes WHERE code = %s",
+                (code,)
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=400, detail="Invalid link code")
+            if row["expires_at"] < datetime.datetime.now(datetime.timezone.utc):
+                cur.execute("DELETE FROM public.telegram_link_codes WHERE code = %s", (code,))
+                conn.commit()
+                raise HTTPException(status_code=400, detail="Expired link code")
+            
+            user_id = row["user_id"]
+            workspace_id = row["workspace_id"]
+            
+            cur.execute(
+                """
+                INSERT INTO public.telegram_workspace_links (telegram_user_id, chat_id, workspace_id, user_id, linked_at)
+                VALUES (%s, %s, %s, %s, now())
+                ON CONFLICT (chat_id)
+                DO UPDATE SET telegram_user_id = EXCLUDED.telegram_user_id,
+                              workspace_id = EXCLUDED.workspace_id,
+                              user_id = EXCLUDED.user_id,
+                              linked_at = now()
+                """,
+                (tg_user_id, chat_id, workspace_id, user_id)
+            )
+            cur.execute("DELETE FROM public.telegram_link_codes WHERE code = %s", (code,))
+            conn.commit()
+            return {"ok": True, "workspaceId": str(workspace_id)}
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Failed to complete telegram link: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to complete telegram link")
+
+@app.get("/api/v1/keept/telegram/resolve")
+async def resolve_telegram_info(
+    request: Request,
+    chat_id: Optional[str] = Query(None),
+    telegram_user_id: Optional[str] = Query(None),
+    webhook_secret: Optional[str] = Query(None),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    verify_internal_access(request, x_api_key, authorization)
+    
+    workspace_id = None
+    user_id = None
+    bot_token = None
+    
+    conn = pg_connect_bookmarks()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if webhook_secret:
+                # Tier B bot lookup
+                # Decrypt bot token using EXTENSION_BOOTSTRAP_SECRET
+                secret_key = EXTENSION_BOOTSTRAP_SECRET
+                cur.execute(
+                    """
+                    SELECT workspace_id, user_id, pgp_sym_decrypt(bot_token_encrypted::bytea, %s) AS bot_token
+                    FROM public.user_telegram_bots
+                    WHERE webhook_secret = %s AND status = 'active'
+                    """,
+                    (secret_key, webhook_secret.strip())
+                )
+                row = cur.fetchone()
+                if row:
+                    workspace_id = row["workspace_id"]
+                    user_id = row["user_id"]
+                    bot_token = row["bot_token"]
+            else:
+                # Tier A lookup by chat_id or telegram_user_id
+                if chat_id:
+                    cur.execute(
+                        "SELECT workspace_id, user_id FROM public.telegram_workspace_links WHERE chat_id = %s",
+                        (str(chat_id).strip(),)
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        workspace_id = row["workspace_id"]
+                        user_id = row["user_id"]
+                if not workspace_id and telegram_user_id:
+                    cur.execute(
+                        "SELECT workspace_id, user_id FROM public.telegram_workspace_links WHERE telegram_user_id = %s",
+                        (str(telegram_user_id).strip(),)
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        workspace_id = row["workspace_id"]
+                        user_id = row["user_id"]
+                        
+                if workspace_id:
+                    bot_token = TELEGRAM_BOT_TOKEN
+            
+            if not workspace_id or not user_id:
+                raise HTTPException(status_code=404, detail="Workspace link not found")
+                
+            # Lookup user email in auth.users
+            email = "autoro.tech@gmail.com"
+            try:
+                cur.execute("SELECT email FROM auth.users WHERE id = %s::uuid", (str(user_id),))
+                user_row = cur.fetchone()
+                if user_row and user_row.get("email"):
+                    email = user_row["email"]
+            except Exception as e:
+                logger.warning("Failed to fetch email from auth.users: %s", e)
+                
+            return {
+                "workspace_id": str(workspace_id),
+                "user_id": str(user_id),
+                "bot_token": bot_token,
+                "swoop_user_email": email
+            }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Failed to resolve telegram info: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to resolve telegram info")
+    finally:
+        conn.close()
+
+
+@app.get("/api/v1/keept/telegram/status")
+async def get_telegram_link_status(
+    request: Request,
+    workspaceId: str = Query(...),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
+    user_id = auth_ctx.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: User identity required")
+    
+    workspace_id = parse_required_workspace_id(workspaceId)
+    verify_workspace_membership(auth_ctx, workspace_id)
+    
+    conn = pg_connect_bookmarks()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT chat_id, telegram_user_id, linked_at FROM public.telegram_workspace_links WHERE workspace_id = %s AND user_id = %s LIMIT 1",
+                (workspace_id, user_id)
+            )
+            link = cur.fetchone()
+            
+            cur.execute(
+                "SELECT bot_username, status FROM public.user_telegram_bots WHERE workspace_id = %s AND user_id = %s LIMIT 1",
+                (workspace_id, user_id)
+            )
+            bot = cur.fetchone()
+            
+            return {
+                "linked": bool(link),
+                "chatId": link["chat_id"] if link else None,
+                "telegramUserId": link["telegram_user_id"] if link else None,
+                "customBot": {
+                    "username": bot["bot_username"],
+                    "status": bot["status"]
+                } if bot else None
+            }
+    except Exception as exc:
+        logger.error("Failed to query telegram status: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to get telegram status")
+    finally:
+        conn.close()
+
+
+@app.delete("/api/v1/keept/telegram/unlink")
+async def unlink_telegram(
+    request: Request,
+    workspaceId: str = Query(...),
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
+    user_id = auth_ctx.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: User identity required")
+    
+    workspace_id = parse_required_workspace_id(workspaceId)
+    verify_workspace_membership(auth_ctx, workspace_id)
+    
+    conn = pg_connect_bookmarks()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM public.telegram_workspace_links WHERE workspace_id = %s AND user_id = %s", (workspace_id, user_id))
+            cur.execute("DELETE FROM public.user_telegram_bots WHERE workspace_id = %s AND user_id = %s", (workspace_id, user_id))
+        conn.commit()
+        return {"ok": True}
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Failed to unlink telegram: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to unlink telegram")
+    finally:
+        conn.close()
+
+
+@app.post("/api/v1/keept/telegram/bot-token")
+async def save_telegram_bot_token(
+    payload: SaveTelegramBotTokenPayload,
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
+    user_id = auth_ctx.get("user_id")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Unauthorized: User identity required")
+    
+    workspace_id = parse_required_workspace_id(payload.workspaceId)
+    verify_workspace_membership(auth_ctx, workspace_id)
+    
+    token = payload.botToken.strip()
+    if not token:
+        raise HTTPException(status_code=400, detail="Bot token is required")
+        
+    try:
+        req = UrlRequest(url=f"https://api.telegram.org/bot{token}/getMe", method="GET")
+        with urlopen(req, timeout=10) as resp:
+            get_me_data = json.loads(resp.read().decode("utf-8"))
+            if not get_me_data.get("ok"):
+                raise HTTPException(status_code=400, detail="Invalid bot token")
+            bot_username = get_me_data["result"]["username"]
+    except Exception as exc:
+        logger.error("Telegram getMe failed: %s", exc)
+        raise HTTPException(status_code=400, detail="Invalid bot token or Telegram API unreachable")
+        
+    import secrets as pysecrets
+    webhook_secret = pysecrets.token_urlsafe(16)
+    
+    cfg = resolve_telegram_gateway_config()
+    n8n_url = cfg["n8nAssistantUrl"]
+    if n8n_url:
+        from urllib.parse import urlparse
+        parsed = urlparse(n8n_url)
+        n8n_base = f"{parsed.scheme}://{parsed.netloc}"
+        webhook_url = f"{n8n_base}/webhook/keept-telegram/{webhook_secret}"
+    else:
+        webhook_url = f"https://swoop.autoro.tech/webhook/keept-telegram/{webhook_secret}"
+        
+    try:
+        set_webhook_url = f"https://api.telegram.org/bot{token}/setWebhook?" + urlencode({
+            "url": webhook_url,
+            "secret_token": webhook_secret
+        })
+        req = UrlRequest(url=set_webhook_url, method="POST")
+        with urlopen(req, timeout=10) as resp:
+            set_wh_data = json.loads(resp.read().decode("utf-8"))
+            if not set_wh_data.get("ok"):
+                raise HTTPException(status_code=400, detail=f"Failed to set Telegram webhook: {set_wh_data.get('description')}")
+    except Exception as exc:
+        logger.error("Telegram setWebhook failed: %s", exc)
+        raise HTTPException(status_code=400, detail="Failed to register bot webhook with Telegram")
+        
+    secret_key = EXTENSION_BOOTSTRAP_SECRET
+    conn = pg_connect_bookmarks()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO public.user_telegram_bots 
+                  (workspace_id, user_id, bot_token_encrypted, bot_username, webhook_secret, status, updated_at)
+                VALUES 
+                  (%s, %s, pgp_sym_encrypt(%s, %s), %s, %s, 'active', now())
+                ON CONFLICT (workspace_id)
+                DO UPDATE SET 
+                  user_id = EXCLUDED.user_id,
+                  bot_token_encrypted = EXCLUDED.bot_token_encrypted,
+                  bot_username = EXCLUDED.bot_username,
+                  webhook_secret = EXCLUDED.webhook_secret,
+                  status = 'active',
+                  updated_at = now()
+                """,
+                (workspace_id, user_id, token, secret_key, bot_username, webhook_secret)
+            )
+        conn.commit()
+        return {"ok": True, "botUsername": bot_username, "webhookUrl": webhook_url}
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Failed to save bot token to database: %s", exc)
+        raise HTTPException(status_code=500, detail="Failed to save bot token")
+    finally:
+        conn.close()
+
+
 @app.post("/api/v1/telegram/webhook")
 async def telegram_webhook_ingest(
     request: Request,
@@ -5763,7 +6368,11 @@ async def telegram_webhook_ingest(
 
     chat = message.get("chat") or {}
     chat_id = chat.get("id")
-    workspace_id = resolve_telegram_workspace_id(chat_id)
+    sender = message.get("from") or {}
+    telegram_user_id = sender.get("id")
+    workspace_id = resolve_telegram_workspace_id(chat_id, telegram_user_id)
+    if workspace_id is None:
+        return {"ok": True, "ignored": True, "reason": "unlinked_chat"}
     text = str(message.get("text") or message.get("caption") or "").strip()
     if not text:
         return {"ok": True, "ignored": True, "reason": "empty_text", "workspaceId": str(workspace_id)}
@@ -5803,7 +6412,7 @@ async def telegram_webhook_ingest(
             cat_use = str(fields.get("content_type") or fields.get("category") or infer_category(first_url, text[:120], text)).strip().lower()
             if cat_use not in {"prompt", "article", "note", "link", "task", "general"}:
                 cat_use = infer_category(first_url, text[:120], text)
-            tags_use = [str(t).strip().lower() for t in (fields.get("tags") or []) if str(t).strip()]
+            tags_use = normalize_tags(fields.get("tags") or [])
             if not tags_use:
                 tags_use = infer_tags(first_url, text[:120], content_use, cat_use)
             category = cat_use
@@ -5986,6 +6595,8 @@ async def start_bookmarks_sync(
         workspace_id = int(payload.workspaceId)
     except ValueError:
         raise HTTPException(status_code=400, detail="workspaceId must be a numeric id for now")
+
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     conn = pg_connect()
     try:
@@ -6292,11 +6903,12 @@ async def bookmarks_capture(
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """Одна закладка из Hermes/Telegram (после нахождения URL агентом)."""
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     try:
         workspace_id = int(payload.workspaceId)
     except ValueError:
         raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     raw_url = str(payload.url or "").strip()
     if not raw_url:
@@ -6361,27 +6973,27 @@ async def list_bookmark_workspaces(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
-    conn = pg_connect()
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
+    user_id = auth_ctx.get("user_id")
+    auth_mode = auth_ctx.get("auth_mode")
+
+    conn = pg_connect_bookmarks()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            workspace_ids = set()
-            for table in ("bookmark_sync_jobs", "bookmarks_bro_bookmarks", "browser_profiles"):
-                cur.execute(f"SELECT to_regclass('public.{table}')::text AS rel")
-                table_exists = bool((cur.fetchone() or {}).get("rel"))
-                if not table_exists:
-                    continue
-                cur.execute(f"SELECT DISTINCT workspace_id FROM public.{table} WHERE workspace_id IS NOT NULL LIMIT 1000")
-                for row in cur.fetchall() or []:
-                    try:
-                        workspace_ids.add(int(row["workspace_id"]))
-                    except (TypeError, ValueError):
-                        continue
-            ids = sorted(workspace_ids)
-            return {
-                "items": [{"id": str(wid), "name": f"Workspace {wid}"} for wid in ids],
-                "count": len(ids),
-            }
+            if auth_mode in ("supabase_user", "bootstrap_token") and user_id:
+                cur.execute("SELECT id, name FROM public.workspaces WHERE owner_id = %s ORDER BY id ASC", (user_id,))
+                items = cur.fetchall() or []
+                return {
+                    "items": [{"id": str(row["id"]), "name": row["name"] or f"Workspace {row['id']}"} for row in items],
+                    "count": len(items),
+                }
+            else:
+                cur.execute("SELECT id, name FROM public.workspaces ORDER BY id ASC LIMIT 1000")
+                items = cur.fetchall() or []
+                return {
+                    "items": [{"id": str(row["id"]), "name": row["name"] or f"Workspace {row['id']}"} for row in items],
+                    "count": len(items),
+                }
     finally:
         conn.close()
 
@@ -6396,7 +7008,10 @@ async def ensure_bookmark_workspace(
     Ensures at least one workspace exists in Bookmarks storage and returns it.
     This is used by BB UI to avoid hardcoded client workspace ids.
     """
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
+    user_id = auth_ctx.get("user_id")
+    auth_mode = auth_ctx.get("auth_mode")
+
     conn = pg_connect_bookmarks()
     try:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
@@ -6411,22 +7026,42 @@ async def ensure_bookmark_workspace(
                 )
                 """
             )
-            cur.execute("SELECT id, name FROM public.workspaces ORDER BY id ASC LIMIT 1")
-            row = cur.fetchone()
-            if not row:
-                cur.execute(
-                    """
-                    INSERT INTO public.workspaces(name)
-                    VALUES ('Default Workspace')
-                    RETURNING id, name
-                    """
-                )
+            
+            if auth_mode in ("supabase_user", "bootstrap_token") and user_id:
+                cur.execute("SELECT id, name FROM public.workspaces WHERE owner_id = %s ORDER BY id ASC LIMIT 1", (user_id,))
                 row = cur.fetchone()
-            conn.commit()
-            return {
-                "workspaceId": str(row["id"]),
-                "workspaceName": row["name"] or f"Workspace {row['id']}",
-            }
+                if not row:
+                    cur.execute(
+                        """
+                        INSERT INTO public.workspaces(owner_id, name)
+                        VALUES (%s, 'Default Workspace')
+                        RETURNING id, name
+                        """,
+                        (user_id,)
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+                return {
+                    "workspaceId": str(row["id"]),
+                    "workspaceName": row["name"] or f"Workspace {row['id']}",
+                }
+            else:
+                cur.execute("SELECT id, name FROM public.workspaces ORDER BY id ASC LIMIT 1")
+                row = cur.fetchone()
+                if not row:
+                    cur.execute(
+                        """
+                        INSERT INTO public.workspaces(name)
+                        VALUES ('Default Workspace')
+                        RETURNING id, name
+                        """
+                    )
+                    row = cur.fetchone()
+                conn.commit()
+                return {
+                    "workspaceId": str(row["id"]),
+                    "workspaceName": row["name"] or f"Workspace {row['id']}",
+                }
     except Exception:
         conn.rollback()
         raise
@@ -6480,8 +7115,12 @@ async def get_bookmark_metrics(
     authorization: Optional[str] = Header(None, alias="Authorization"),
     workspaceId: Optional[str] = None,
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     ws_only = parse_optional_workspace_id(workspaceId)
+    if ws_only is None and auth_ctx.get("auth_mode") not in ("dev_bypass", "api_key", "env_api_key"):
+        raise HTTPException(status_code=400, detail="workspaceId is required")
+    if ws_only is not None:
+        verify_workspace_membership(auth_ctx, ws_only)
 
     conn = pg_connect()
     try:
@@ -6607,8 +7246,9 @@ async def bookmarks_library_facets(
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """Категории и теги для фильтров библиотеки (по обогащённым закладкам)."""
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     ws = parse_required_workspace_id(workspaceId)
+    verify_workspace_membership(auth_ctx, ws)
 
     conn = pg_connect()
     try:
@@ -6656,6 +7296,7 @@ async def log_bookmark_token_usage(
 ):
     auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     workspace_id = parse_required_workspace_id(payload.workspaceId)
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     prompt_tokens = max(0, int(payload.promptTokens or 0))
     completion_tokens = max(0, int(payload.completionTokens or 0))
@@ -6717,8 +7358,9 @@ async def get_bookmark_token_usage(
     taskName: Optional[str] = None,
     limit: int = 100,
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     workspace_id = parse_required_workspace_id(workspaceId)
+    verify_workspace_membership(auth_ctx, workspace_id)
     limit = max(1, min(int(limit or 100), 500))
 
     conn = pg_connect()
@@ -6802,8 +7444,9 @@ async def get_bookmarks_workspace_ui_state(
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """Snapshots идей, напоминаний и карточек KB Bookmarks Bro для workspace."""
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     workspace_id = parse_required_workspace_id(workspaceId)
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     conn = pg_connect_bookmarks()
     try:
@@ -6853,8 +7496,9 @@ async def put_bookmarks_workspace_ui_state(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     workspace_id = parse_required_workspace_id(payload.workspaceId)
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     ideas = payload.ideas[:_BB_UI_MAX_ROWS] if payload.ideas else []
     reminders = payload.reminders[:_BB_UI_MAX_ROWS] if payload.reminders else []
@@ -6922,8 +7566,9 @@ async def bookmarks_library_list(
     sort: title | updated | created
     order: asc | desc
     """
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     ws = parse_required_workspace_id(workspaceId)
+    verify_workspace_membership(auth_ctx, ws)
     lim = max(1, min(int(limit or 40), 80))
     off = max(0, int(offset or 0))
     sort_l = (sort or "updated").lower()
@@ -7064,7 +7709,12 @@ async def run_bookmark_pipeline(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
+    try:
+        workspace_id = int(payload.workspaceId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     sync_result = await start_bookmarks_sync(
         BookmarkSyncStartPayload(
@@ -7120,9 +7770,13 @@ async def run_bookmark_worker(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     max_tasks = payload.max_tasks
     ws_only = parse_optional_workspace_id(payload.workspaceId)
+    if ws_only is None and auth_ctx.get("auth_mode") not in ("dev_bypass", "api_key", "env_api_key"):
+        raise HTTPException(status_code=400, detail="workspaceId is required")
+    if ws_only is not None:
+        verify_workspace_membership(auth_ctx, ws_only)
     job_only = parse_optional_job_id(payload.jobId)
 
     processed = 0
@@ -7333,9 +7987,13 @@ async def run_bookmark_enrichment(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     limit = payload.max_tasks
     ws_only = parse_optional_workspace_id(payload.workspaceId)
+    if ws_only is None and auth_ctx.get("auth_mode") not in ("dev_bypass", "api_key", "env_api_key"):
+        raise HTTPException(status_code=400, detail="workspaceId is required")
+    if ws_only is not None:
+        verify_workspace_membership(auth_ctx, ws_only)
     processed = 0
     enrich_failed = 0
     max_llm = bookmarks_ai_enrich_max_calls_per_run()
@@ -7489,11 +8147,12 @@ async def bookmark_search(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     try:
         workspace_id = int(payload.workspaceId)
     except ValueError:
         raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     conn = pg_connect()
     try:
@@ -7667,7 +8326,7 @@ async def bookmark_ai_recommend(
     RAG для закладок: embedding(задача) → ближайшие векторы в БД → LLM выбирает и объясняет.
     Нужны ключи LLM: в env (OPENAI_API_KEY) и/или в service_settings админки (glm, Gemini, OpenRouter и т.д.).
     """
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     if not has_any_bookmark_llm_keys():
         raise HTTPException(
             status_code=503,
@@ -7678,12 +8337,14 @@ async def bookmark_ai_recommend(
         workspace_id = int(payload.workspaceId)
     except ValueError:
         raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     search_mode_raw = str(payload.searchMode or "bookmarks").strip().lower()
-    if search_mode_raw in {"web_research", "fast"}:
+    if search_mode_raw == "kb":
+        search_mode = "bookmarks"
+    elif search_mode_raw in {"web_research", "fast"}:
         search_mode = "fast"
     elif search_mode_raw == "deep":
-        # Deep mode kept for backward compatibility, currently routed to Web Research stack.
         search_mode = "fast"
     else:
         search_mode = search_mode_raw
@@ -7822,18 +8483,44 @@ async def bookmark_ai_recommend(
         )
 
     system_prompt = (
-        "Ты помощник по сохранённым закладкам пользователя. По формулировке TASK нужно предложить "
-        "сайты из списка CANDIDATES, которые реально помогут решить задачу (инструменты, документация, гайды). "
-        "Ответ строго JSON с ключами: "
-        '"overview" (string, 2–4 предложения по-русски), '
-        '"picks" (array объектов { "candidateId": string, "relevance": number от 0 до 1, "reason": string по-русски, до 220 символов }). '
-        f"Не больше {payload.maxPicks} элементов в picks. Используй только candidateId из входного списка. "
-        "Сортируй picks по убыванию relevance. Если ни один кандидат не подходит, верни пустой picks и объясни в overview."
+        "You are an AI assistant for the user's saved bookmarks and knowledge base. Based on the TASK, "
+        "recommend the most helpful links from the CANDIDATES list that will help solve the user's problem. "
+    )
+    if payload.autonomy in {"suggest", "act"}:
+        system_prompt += (
+            "Provide your output strictly as a JSON object with the following keys: "
+            '"overview" (string, 2-4 sentences summarizing how the recommended candidates help), '
+            '"picks" (array of objects containing { "candidateId": string, "relevance": number from 0 to 1, "reason": string explaining why, max 220 chars }), '
+            '"actions" (array of objects representing suggested actions based on the task and recommendations. '
+            'Each action must have "type" which can be: '
+            '"create_task" (requires "title" and "description"), '
+            '"create_knowledge" (requires "title" and "description" containing markdown text), '
+            '"create_reminder" (requires "title" and "minutesDelay" like 60 or 1440), or '
+            '"modify_tags" (requires "bookmarkId" and "tags" array of strings). '
+            'Also include a "reason" string for each action explaining why it is recommended). '
+        )
+    else:
+        system_prompt += (
+            "Provide your output strictly as a JSON object with the following keys: "
+            '"overview" (string, 2-4 sentences summarizing how the recommended candidates help), '
+            '"picks" (array of objects containing { "candidateId": string, "relevance": number from 0 to 1, "reason": string explaining why, max 220 chars }). '
+        )
+    system_prompt += (
+        f"Do not exceed {payload.maxPicks} items in the picks array. Only use candidateIds from the input list. "
+        "Sort picks by relevance in descending order. If no candidate is relevant, return an empty picks array and explain why in overview."
     )
     user_prompt = "TASK:\n" + task + "\n\nCANDIDATES_JSON:\n" + json.dumps(slim, ensure_ascii=False)
 
     tier_hdr = (x_llm_tier or "").strip().lower()
-    tier_override = tier_hdr if tier_hdr in _LLM_TIER_NAMES else None
+    if tier_hdr in _LLM_TIER_NAMES:
+        tier_override = tier_hdr
+    else:
+        depth_raw = str(payload.depth or "quick").strip().lower()
+        if depth_raw == "deep":
+            tier_override = "reasoning"
+        else:
+            tier_override = "fast"
+
     llm_res = openai_chat_json_object(
         system_prompt,
         user_prompt,
@@ -7910,6 +8597,39 @@ async def bookmark_ai_recommend(
         if m
     ]
 
+    actions: List[Dict[str, Any]] = []
+    if payload.autonomy in {"suggest", "act"}:
+        raw_actions = parsed.get("actions")
+        if isinstance(raw_actions, list):
+            for item in raw_actions:
+                if not isinstance(item, dict):
+                    continue
+                atype = str(item.get("type") or "").strip().lower()
+                if atype not in {"create_task", "create_knowledge", "create_reminder", "modify_tags"}:
+                    continue
+                
+                bid = item.get("bookmarkId")
+                if isinstance(bid, str) and bid.startswith("b:"):
+                    try:
+                        bid = int(bid[2:])
+                    except ValueError:
+                        pass
+                try:
+                    if bid is not None:
+                        bid = int(bid)
+                except (ValueError, TypeError):
+                    bid = None
+
+                actions.append({
+                    "type": atype,
+                    "title": str(item.get("title") or "").strip(),
+                    "description": str(item.get("description") or "").strip(),
+                    "bookmarkId": bid,
+                    "tags": [str(t).strip() for t in item.get("tags") or [] if str(t).strip()],
+                    "minutesDelay": int(item.get("minutesDelay")) if item.get("minutesDelay") is not None else None,
+                    "reason": str(item.get("reason") or "").strip()
+                })
+
     body = {
         "task": task,
         "workspaceId": payload.workspaceId,
@@ -7917,6 +8637,7 @@ async def bookmark_ai_recommend(
         "candidateCount": len(slim),
         "overview": overview,
         "recommendations": recommendations,
+        "actions": actions,
         "modelHints": list(dict.fromkeys(model_hints)),
     }
     headers = {
@@ -7924,6 +8645,51 @@ async def bookmark_ai_recommend(
         "X-LLM-Route": route_header,
     }
     return JSONResponse(content=body, headers={k: v for k, v in headers.items() if v})
+
+
+class BookmarkModifyTagsPayload(BaseModel):
+    workspaceId: str = Field(..., min_length=1, max_length=64)
+    bookmarkId: int
+    tags: List[str]
+
+
+@app.post("/api/v1/bookmarks/modify-tags")
+async def bookmark_modify_tags(
+    payload: BookmarkModifyTagsPayload,
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
+    try:
+        workspace_id = int(payload.workspaceId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
+
+    conn = pg_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id FROM public.bookmarks_bro_bookmarks WHERE id = %s AND workspace_id = %s AND is_deleted = false",
+                (payload.bookmarkId, workspace_id),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Bookmark not found in workspace")
+
+            cur.execute(
+                """
+                INSERT INTO public.bookmark_page_content (bookmark_id, tags)
+                VALUES (%s, %s::jsonb)
+                ON CONFLICT (bookmark_id)
+                DO UPDATE SET tags = %s::jsonb
+                """,
+                (payload.bookmarkId, json.dumps(payload.tags), json.dumps(payload.tags)),
+            )
+            conn.commit()
+    finally:
+        conn.close()
+    return {"ok": True}
 
 
 @app.get("/v1/models")
@@ -8421,7 +9187,12 @@ async def knowledge_extract_and_capture(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
+    try:
+        workspace_id = int(payload.workspaceId)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
     fields = extract_knowledge_target_fields(
         payload.rawText,
         user_instruction=payload.userInstruction,
@@ -8507,7 +9278,7 @@ async def knowledge_extract_and_capture(
         category = _truncate_text(str(fields.get("category") or "general").strip().lower(), 128) or "general"
 
     tags_raw = fields.get("tags") if isinstance(fields.get("tags"), list) else []
-    tags = [str(t).strip().lower() for t in tags_raw if str(t).strip()]
+    tags = normalize_tags(tags_raw)
     if category and category not in tags:
         tags.insert(0, category)
     for t in ("telegram", payload.source or "telegram"):
@@ -8567,11 +9338,12 @@ async def knowledge_capture(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     try:
         workspace_id = int(payload.workspaceId)
     except ValueError:
         raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     source = _truncate_text(str(payload.source or "unknown").strip().lower(), 64)
     raw_url = str(payload.url or "").strip()
@@ -8788,11 +9560,12 @@ async def knowledge_reenrich_by_id(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     try:
         workspace_id = int(payload.workspaceId)
     except ValueError:
         raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
     if knowledge_item_id <= 0:
         raise HTTPException(status_code=400, detail="knowledge_item_id must be positive")
 
@@ -8821,7 +9594,7 @@ async def knowledge_reenrich_by_id(
                 text=str(row.get("content_text") or ""),
                 ai_summary=str(row.get("ai_summary") or ""),
                 category=str(row.get("category") or "general"),
-                tags=[str(t).strip().lower() for t in (row.get("tags") or []) if str(t).strip()],
+                tags=normalize_tags(row.get("tags") or []),
                 source=str(row.get("source") or "unknown"),
             )
 
@@ -8829,7 +9602,7 @@ async def knowledge_reenrich_by_id(
             text = str(finalized.get("text") or row.get("content_text") or "").strip()[:200000]
             ai_summary = _truncate_text(str(finalized.get("ai_summary") or row.get("ai_summary") or ""), 4000)
             category = _truncate_text(str(finalized.get("category") or row.get("category") or "general").lower(), 128) or "general"
-            tags = [str(t).strip().lower() for t in (finalized.get("tags") or row.get("tags") or []) if str(t).strip()]
+            tags = normalize_tags(finalized.get("tags") or row.get("tags") or [])
             if category and category not in tags:
                 tags.insert(0, category)
             tags = list(dict.fromkeys(tags))[:12]
@@ -8959,11 +9732,12 @@ async def knowledge_sync_obsidian_all(
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
     """Переэкспорт всех записей БЗ в Obsidian (+ ссылки → Bookmarks Bro)."""
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     try:
         workspace_id = int(payload.workspaceId)
     except ValueError:
         raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     conn = pg_connect()
     ids: List[int] = []
@@ -9022,11 +9796,12 @@ async def knowledge_search(
     x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
     authorization: Optional[str] = Header(None, alias="Authorization"),
 ):
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     try:
         workspace_id = int(payload.workspaceId)
     except ValueError:
         raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     conn = pg_connect()
     try:
@@ -9138,11 +9913,12 @@ async def knowledge_export(
     On-demand export of knowledge base with Obsidian markdown body plus vector metadata.
     Intended for user-triggered "export my Obsidian + vector knowledge" operations.
     """
-    verify_bookmarks_access(request, x_api_key, authorization)
+    auth_ctx = verify_bookmarks_access(request, x_api_key, authorization)
     try:
         workspace_id = int(payload.workspaceId)
     except ValueError:
         raise HTTPException(status_code=400, detail="workspaceId must be numeric")
+    verify_workspace_membership(auth_ctx, workspace_id)
 
     conn = pg_connect()
     try:

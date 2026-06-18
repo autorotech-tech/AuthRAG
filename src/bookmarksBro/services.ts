@@ -7,9 +7,20 @@ import type {
   SearchItem,
   SourceKind,
   TaskTokenUsage,
+  AgentAction,
+  AgentAutonomy,
+  AgentContext,
+  AgentDepth,
+  StorageMode,
 } from './types'
 import { bookmarksAgentApiUrl } from './agentApiBase'
 import { setUiSyncStatus } from './uiSyncStatus'
+import {
+  searchLocalVault,
+  saveLocalBookmark,
+  saveLocalNote,
+  listLocalNotes,
+} from './localVectorStore'
 
 const IDEAS_KEY = 'bookmarks_bro_ideas'
 const REMINDERS_KEY = 'bookmarks_bro_reminders'
@@ -22,8 +33,8 @@ const fallbackDataset: SearchItem[] = [
   {
     id: 'demo-obsidian-1',
     source: 'Obsidian',
-    title: 'AI Agents маркетинг гипотезы',
-    snippet: 'Сводка экспериментов по контент-воронке и GPT-процессу генерации идей.',
+    title: 'AI Agents marketing hypotheses',
+    snippet: 'Summary of experiments on content funnels and GPT idea generation processes.',
     link: 'obsidian://open?vault=Autoro&file=AI%20Agents%20Marketing',
     tags: ['ai', 'marketing', 'hypothesis'],
     relevance: 0.78,
@@ -32,8 +43,8 @@ const fallbackDataset: SearchItem[] = [
   {
     id: 'demo-bookmark-1',
     source: 'Bookmarks',
-    title: 'Конкурентный анализ инструментов knowledge-base',
-    snippet: 'Материал по архитектуре knowledge ingestion + vector search.',
+    title: 'Competitive analysis of knowledge-base tools',
+    snippet: 'Material on knowledge ingestion + vector search architecture.',
     link: 'https://example.com/knowledge-stack',
     tags: ['kb', 'architecture'],
     relevance: 0.73,
@@ -45,7 +56,7 @@ const fallbackNotes: NoteItem[] = [
   {
     id: 'note-obsidian-1',
     title: 'Unified Knowledge Base Plan',
-    content: 'Идемпотентный ingestion pipeline с состояниями captured/enriched/indexed/searchable.',
+    content: 'Idempotent ingestion pipeline with captured/enriched/indexed/searchable states.',
     source: 'Obsidian',
     tags: ['knowledge-base', 'architecture'],
     updatedAt: new Date().toISOString(),
@@ -260,6 +271,24 @@ function normalizeSearchItem(item: unknown, idx: number): SearchItem {
 
 export async function unifiedSearch(query: string, sourceFilter: SourceKind | 'All'): Promise<SearchItem[]> {
   const trimmed = query.trim()
+
+  if (getStorageMode() === 'local') {
+    const apiKey = getLocalGeminiApiKey()
+    const localResults = await searchLocalVault({
+      query: trimmed,
+      sourceFilter,
+      apiKey,
+      limit: 20
+    })
+    trackTelemetry('search_success', {
+      query: trimmed,
+      sourceFilter,
+      resultsCount: localResults.length,
+      mode: 'local_indexeddb',
+    })
+    return localResults
+  }
+
   const workspaceId = await resolveWorkspaceId()
   if (!trimmed) {
     return fallbackDataset.filter((row) => sourceFilter === 'All' || row.source === sourceFilter)
@@ -275,6 +304,13 @@ export async function unifiedSearch(query: string, sourceFilter: SourceKind | 'A
     const payload = (await response.json()) as { items?: unknown[]; results?: unknown[] }
     const rows = payload.items ?? payload.results ?? []
     const normalized = rows.map(normalizeSearchItem)
+
+    for (const item of normalized) {
+      if (item.source === 'Bookmarks' || item.source === 'Links') {
+        saveLocalBookmark(item).catch((e) => console.warn('Failed to cache bookmark:', e))
+      }
+    }
+
     const filtered = normalized.filter((row) => sourceFilter === 'All' || row.source === sourceFilter)
     trackTelemetry('search_success', {
       query: trimmed,
@@ -322,8 +358,8 @@ export async function generateIdeasFromNotes(input: {
     const now = new Date().toISOString()
     const ideas = (payload.picks ?? []).slice(0, 5).map((pick, index) => ({
       id: `idea-${Date.now()}-${index}`,
-      title: String(pick.title ?? `Идея #${index + 1}`),
-      context: String(pick.reason ?? pick.summary ?? 'Сгенерировано из похожих материалов и заметок.'),
+      title: String(pick.title ?? `Idea #${index + 1}`),
+      context: String(pick.reason ?? pick.summary ?? 'Generated from related materials and notes.'),
       originRefs: ids,
       priority: 'medium' as const,
       status: 'draft' as const,
@@ -342,8 +378,8 @@ export async function generateIdeasFromNotes(input: {
     const top = input.searchItems.slice(0, 3)
     const ideas = top.map((item, index) => ({
       id: `idea-fallback-${Date.now()}-${index}`,
-      title: `Идея: ${item.title}`,
-      context: `На основе ${item.source}: ${item.snippet.slice(0, 180)}`,
+      title: `Idea: ${item.title}`,
+      context: `Based on ${item.source}: ${item.snippet.slice(0, 180)}`,
       originRefs: [item.id],
       priority: 'medium' as const,
       status: 'draft' as const,
@@ -412,7 +448,7 @@ export async function generateIdeasFromDatabase(task: string): Promise<{
     const fallbackIdea: IdeaItem = {
       id: `db-idea-fallback-${Date.now()}`,
       title: 'Knowledge synthesis needed',
-      context: 'Не удалось получить идеи из всей БД. Проверьте доступ к API и embeddings.',
+      context: 'Failed to generate ideas from the database. Check API access and embeddings.',
       originRefs: ['db-fallback'],
       priority: 'medium',
       status: 'draft',
@@ -429,6 +465,18 @@ export async function generateIdeasFromDatabase(task: string): Promise<{
 
 export async function fetchObsidianNotesBridge(query: string): Promise<NoteItem[]> {
   const trimmed = query.trim()
+
+  if (getStorageMode() === 'local') {
+    const notes = await listLocalNotes()
+    if (!trimmed) return notes
+    return notes.filter(
+      (note) =>
+        note.title.toLowerCase().includes(trimmed.toLowerCase()) ||
+        note.content.toLowerCase().includes(trimmed.toLowerCase()) ||
+        note.tags.some((tag) => tag.toLowerCase().includes(trimmed.toLowerCase())),
+    )
+  }
+
   const workspaceId = await resolveWorkspaceId()
   try {
     const response = await fetch(bookmarksAgentApiUrl('/api/v1/knowledge/search'), {
@@ -448,6 +496,11 @@ export async function fetchObsidianNotesBridge(query: string): Promise<NoteItem[
       updatedAt: String(row.updatedAt ?? row.createdAt ?? new Date().toISOString()),
       link: typeof row.url === 'string' ? row.url : undefined,
     }))
+
+    for (const note of notes) {
+      saveLocalNote(note).catch((e) => console.warn('Failed to cache local note:', e))
+    }
+
     return notes
   } catch {
     if (!trimmed) return fallbackNotes
@@ -483,7 +536,7 @@ export async function exportKnowledgeBundle(
   return (await response.json()) as KnowledgeExportBundle
 }
 
-/** После hydrate UI — иначе первая запись локального состояния перезапишет данные на сервере пустым снапшотом. */
+/** After UI hydration — otherwise the first local state save will overwrite server data with an empty snapshot. */
 let bookmarksBroRemotePersist = false
 
 export function setBookmarksBroRemotePersistEnabled(value: boolean): void {
@@ -554,7 +607,7 @@ export async function pushWorkspaceUiStateNow(): Promise<boolean> {
   }
 }
 
-/** Принудительная синхронизация (кнопка в UI). */
+/** Force synchronization (button in UI). */
 export async function syncWorkspaceUiStateNow(): Promise<boolean> {
   setUiSyncStatus('syncing')
   return pushWorkspaceUiStateNow()
@@ -613,3 +666,238 @@ export function exportKnowledgeMarkdown(item: KnowledgeItem): string {
   const refs = item.refs.map((ref) => `- ${ref}`).join('\n')
   return `${frontmatter}# ${item.title}\n\n## Summary\n${item.summary}\n\n## References\n${refs}\n`
 }
+
+export interface TelegramLinkStatus {
+  linked: boolean
+  chatId: string | null
+  telegramUserId: string | null
+  customBot: {
+    username: string
+    status: string
+  } | null
+}
+
+export async function generateTelegramLinkCode(): Promise<{
+  code: string
+  botUsername: string
+  expiresAt: string
+}> {
+  const workspaceId = await resolveWorkspaceId()
+  const response = await fetch(
+    bookmarksAgentApiUrl(`/api/v1/keept/telegram/link-code?workspaceId=${encodeURIComponent(workspaceId)}`),
+    {
+      method: 'POST',
+      headers: bookmarksHeaders(),
+    }
+  )
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Failed to generate link code')
+  }
+  return response.json()
+}
+
+export async function getTelegramLinkStatus(): Promise<TelegramLinkStatus> {
+  const workspaceId = await resolveWorkspaceId()
+  const response = await fetch(
+    bookmarksAgentApiUrl(`/api/v1/keept/telegram/status?workspaceId=${encodeURIComponent(workspaceId)}`),
+    {
+      headers: bookmarksHeaders(),
+    }
+  )
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Failed to get telegram status')
+  }
+  return response.json()
+}
+
+export async function unlinkTelegram(): Promise<boolean> {
+  const workspaceId = await resolveWorkspaceId()
+  const response = await fetch(
+    bookmarksAgentApiUrl(`/api/v1/keept/telegram/unlink?workspaceId=${encodeURIComponent(workspaceId)}`),
+    {
+      method: 'DELETE',
+      headers: bookmarksHeaders(),
+    }
+  )
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Failed to unlink telegram')
+  }
+  const payload = await response.json()
+  return !!payload.ok
+}
+
+export async function saveTelegramCustomBotToken(botToken: string): Promise<{
+  ok: boolean
+  botUsername: string
+  webhookUrl: string
+}> {
+  const workspaceId = await resolveWorkspaceId()
+  const response = await fetch(
+    bookmarksAgentApiUrl('/api/v1/keept/telegram/bot-token'),
+    {
+      method: 'POST',
+      headers: bookmarksHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ workspaceId, botToken }),
+    }
+  )
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}))
+    throw new Error(err.detail || 'Failed to save bot token')
+  }
+  return response.json()
+}
+
+export interface KeeptAgentResult {
+  overview: string
+  recommendations: SearchItem[]
+  actions: AgentAction[]
+  retrievalMode: string
+  candidateCount: number
+}
+
+export async function runKeeptAgent(input: {
+  task: string
+  context: AgentContext
+  depth: AgentDepth
+  autonomy: AgentAutonomy
+}): Promise<KeeptAgentResult> {
+  const workspaceId = await resolveWorkspaceId()
+  const cleanTask = input.task.trim()
+  if (!cleanTask) {
+    return { overview: 'No task specified.', recommendations: [], actions: [], retrievalMode: 'none', candidateCount: 0 }
+  }
+
+  const searchMode = input.context === 'kb' ? 'bookmarks' : input.context
+
+  const response = await fetch(bookmarksAgentApiUrl('/api/v1/bookmarks/ai-recommend'), {
+    method: 'POST',
+    headers: bookmarksHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify({
+      workspaceId,
+      task: cleanTask,
+      retrieveLimit: 32,
+      maxPicks: 10,
+      searchMode,
+      depth: input.depth,
+      autonomy: input.autonomy,
+    }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Agent run failed with status: ${response.status}`)
+  }
+
+  const payload = (await response.json()) as {
+    overview?: string
+    recommendations?: any[]
+    picks?: any[]
+    actions?: AgentAction[]
+    retrievalMode?: string
+    candidateCount?: number
+  }
+
+  const recs = (payload.recommendations ?? payload.picks ?? []).map(normalizeSearchItem)
+  const actions = (payload.actions ?? []).map((act: any, index: number) => ({
+    ...act,
+    id: `act-${Date.now()}-${index}`,
+    executed: false,
+  }))
+
+  return {
+    overview: String(payload.overview ?? ''),
+    recommendations: recs,
+    actions,
+    retrievalMode: String(payload.retrievalMode ?? ''),
+    candidateCount: Number(payload.candidateCount ?? 0),
+  }
+}
+
+export async function executeAgentAction(action: AgentAction): Promise<boolean> {
+  if (action.executed) return true
+  const workspaceId = await resolveWorkspaceId()
+
+  if (action.type === 'create_task') {
+    const currentIdeas = listIdeas()
+    const newIdea: IdeaItem = {
+      id: `idea-${Date.now()}`,
+      title: action.title || 'Agent Suggested Task',
+      context: action.description || 'No description provided.',
+      originRefs: [],
+      priority: 'medium',
+      status: 'draft',
+      createdAt: new Date().toISOString(),
+    }
+    saveIdeas([newIdea, ...currentIdeas])
+    return true
+  }
+
+  if (action.type === 'create_knowledge') {
+    const currentKB = listKnowledgeItems()
+    const newKB: KnowledgeItem = {
+      id: `kb-${Date.now()}`,
+      title: action.title || 'Agent Knowledge Draft',
+      summary: action.description || 'No summary provided.',
+      tags: action.tags || [],
+      refs: [],
+      status: 'draft',
+      createdAt: new Date().toISOString(),
+    }
+    saveKnowledgeItems([newKB, ...currentKB])
+    return true
+  }
+
+  if (action.type === 'create_reminder') {
+    const currentReminders = listReminders()
+    const remindAt = new Date(Date.now() + (action.minutesDelay || 60) * 60 * 1000).toISOString()
+    const newReminder: ReminderItem = {
+      id: `rem-${Date.now()}`,
+      ideaId: `idea-agent-${Date.now()}`,
+      title: action.title || 'Agent Reminder',
+      remindAt,
+      done: false,
+    }
+    saveReminders([newReminder, ...currentReminders])
+    return true
+  }
+
+  if (action.type === 'modify_tags') {
+    if (!action.bookmarkId || !action.tags) return false
+    const response = await fetch(bookmarksAgentApiUrl('/api/v1/bookmarks/modify-tags'), {
+      method: 'POST',
+      headers: bookmarksHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        workspaceId,
+        bookmarkId: action.bookmarkId,
+        tags: action.tags,
+      }),
+    })
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}))
+      throw new Error(err.detail || 'Failed to modify bookmark tags on backend')
+    }
+    return true
+  }
+
+  return false
+}
+
+export function getStorageMode(): StorageMode {
+  return (localStorage.getItem('bookmarks_bro_storage_mode') as StorageMode) || 'cloud'
+}
+
+export function setStorageMode(mode: StorageMode): void {
+  localStorage.setItem('bookmarks_bro_storage_mode', mode)
+}
+
+export function getLocalGeminiApiKey(): string {
+  return localStorage.getItem('bookmarks_bro_local_gemini_api_key') || ''
+}
+
+export function setLocalGeminiApiKey(key: string): void {
+  localStorage.setItem('bookmarks_bro_local_gemini_api_key', key)
+}
+
+

@@ -80,3 +80,22 @@ export interface KnowledgeExportBundle {
     embeddingModel?: string | null
   }>
 }
+
+export type AgentContext = 'kb' | 'hybrid' | 'web'
+export type AgentDepth = 'quick' | 'deep'
+export type AgentAutonomy = 'answer' | 'suggest' | 'act'
+
+export interface AgentAction {
+  id?: string
+  type: 'create_task' | 'create_knowledge' | 'create_reminder' | 'modify_tags'
+  title?: string
+  description?: string
+  bookmarkId?: number
+  tags?: string[]
+  minutesDelay?: number
+  reason?: string
+  executed?: boolean
+}
+
+export type StorageMode = 'cloud' | 'local'
+

@@ -22,15 +22,15 @@ export function subscribeUiSyncStatus(fn: (s: UiSyncStatus) => void): () => void
 export function uiSyncStatusLabel(s: UiSyncStatus): string {
   switch (s) {
     case 'hydrating':
-      return 'Загрузка с сервера…'
+      return 'Loading from server...'
     case 'syncing':
-      return 'Сохранение…'
+      return 'Saving...'
     case 'synced':
-      return 'Синхронизировано'
+      return 'Synced'
     case 'error':
-      return 'Ошибка синхронизации'
+      return 'Sync error'
     case 'offline':
-      return 'Локально (сервер недоступен)'
+      return 'Local (server unavailable)'
     default:
       return '—'
   }

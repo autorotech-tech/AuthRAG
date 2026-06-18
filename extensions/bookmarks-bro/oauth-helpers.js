@@ -1,8 +1,8 @@
 /**
- * Supabase Auth OAuth — authorize URL открывается в отдельном popup-окне с фокусом.
- * В Supabase Dashboard → Authentication → URL configuration добавьте redirect:
+ * Supabase Auth OAuth — authorize URL opens in a separate popup window with focus.
+ * In Supabase Dashboard → Authentication → URL configuration, add redirect:
  *   chrome-extension://<EXTENSION_ID>/oauth-callback.html
- * См. SUPABASE_OAUTH_SETUP.md в папке расширения.
+ * See SUPABASE_OAUTH_SETUP.md in the extension folder.
  */
 
 function normalizeAuthPath(raw) {
@@ -27,7 +27,7 @@ async function getSupabaseAuthBaseFromStorage() {
 }
 
 /**
- * @param {'google'|'azure'} provider — в Supabase провайдер Microsoft = azure
+ * @param {'google'|'azure'} provider — in Supabase, the Microsoft provider = azure
  */
 async function startSupabaseOAuth(provider) {
   const base = await getSupabaseAuthBaseFromStorage();

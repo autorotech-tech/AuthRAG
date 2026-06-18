@@ -28,7 +28,7 @@ function decodeJwtEmail(token) {
     hash.get('error_description') ||
     hash.get('error');
   if (err) {
-    msg.textContent = `Ошибка входа: ${err}`;
+    msg.textContent = `Login error: ${err}`;
     return;
   }
 
@@ -38,13 +38,13 @@ function decodeJwtEmail(token) {
 
   if (search.get('code') && !accessToken) {
     msg.innerHTML =
-      'Получен код авторизации (PKCE). Добавьте в Supabase redirect для расширения или войдите по email/password. ' +
-      '<a href="https://supabase.com/docs/guides/auth/social-login" target="_blank" rel="noreferrer">Документация</a>';
+      'Authorization code received (PKCE). Please add the extension redirect URL to Supabase or sign in using email/password. ' +
+      '<a href="https://supabase.com/docs/guides/auth/social-login" target="_blank" rel="noreferrer">Documentation</a>';
     return;
   }
 
   if (!accessToken) {
-    msg.textContent = 'Токены не найдены в ответе. Проверьте redirect URL в Supabase (chrome-extension://…/oauth-callback.html).';
+    msg.textContent = 'Tokens not found in response. Verify the redirect URL configuration in Supabase (chrome-extension://.../oauth-callback.html).';
     return;
   }
 
@@ -59,7 +59,7 @@ function decodeJwtEmail(token) {
     userTokenExpiresAt: expiresAt,
   });
 
-  msg.textContent = email ? `Вход выполнен: ${email}. Можно закрыть вкладку.` : 'Вход выполнен. Можно закрыть вкладку.';
+  msg.textContent = email ? `Login successful: ${email}. You can close this tab now.` : 'Login successful. You can close this tab now.';
   setTimeout(() => window.close(), 1200);
 })().catch((e) => {
   const msg = document.getElementById('msg');

@@ -37,7 +37,7 @@ async function fetchAgentJson(url, options = {}) {
     }
   }
   if (!response) {
-    throw new Error(`Сеть недоступна (${networkErr?.message || 'network error'})`);
+    throw new Error(`Network unavailable (${networkErr?.message || 'network error'})`);
   }
   const raw = await response.text();
   let data = null;
@@ -63,7 +63,7 @@ async function submitLogin() {
   const email = String(emailInput?.value || '').trim();
   const password = String(passwordInput?.value || '').trim();
   if (!email || !password) {
-    setError('Введите email и password');
+    setError('Enter email and password');
     return;
   }
 
@@ -84,7 +84,7 @@ async function submitLogin() {
       userEmail: String(data?.user?.email || email),
       userTokenExpiresAt: toEpochFromExpiresIn(data?.expiresIn),
     });
-    setSuccess('Login OK. Можно закрыть это окно.');
+    setSuccess('Login successful. You can close this window.');
     setTimeout(() => {
       window.close();
     }, 700);
@@ -105,7 +105,7 @@ async function submitSignup() {
   const email = String(emailInput?.value || '').trim();
   const password = String(passwordInput?.value || '').trim();
   if (!email || !password) {
-    setError('Введите email и password');
+    setError('Enter email and password');
     return;
   }
   setError('');
@@ -193,7 +193,7 @@ googleOAuthBtn?.addEventListener('click', async () => {
   setError('');
   try {
     await startSupabaseOAuth('google');
-    setSuccess('Откроется окно входа Google — завершите вход, фокус перенесётся на него автоматически.');
+    setSuccess('Google login window will open. Complete the login, focus will return automatically.');
   } catch (e) {
     setError(String(e?.message || e));
   }
@@ -202,7 +202,7 @@ azureOAuthBtn?.addEventListener('click', async () => {
   setError('');
   try {
     await startSupabaseOAuth('azure');
-    setSuccess('Откроется окно Microsoft — завершите вход.');
+    setSuccess('Microsoft login window will open. Complete the login.');
   } catch (e) {
     setError(String(e?.message || e));
   }

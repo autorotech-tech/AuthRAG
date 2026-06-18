@@ -66,21 +66,21 @@ function formatMetricsReport(data, workspaceId, signedInHint, uiStateLine = '') 
   const bookmarks = data?.bookmarks || {};
   const content = data?.content || {};
   const lines = [
-    'OK: API доступен (bootstrap + metrics).',
+    'OK: API is available (bootstrap + metrics).',
     `Build: ${BB_EXTENSION.build}`,
     signedInHint,
     '',
-    `Workspace (поле настроек): ${workspaceId}`,
-    `Фильтр API: ${data?.workspaceIdFilter ?? 'все'}`,
+    `Workspace (settings field): ${workspaceId}`,
+    `API filter: ${data?.workspaceIdFilter ?? 'all'}`,
     '',
-    `Закладки: ${bookmarks.total_bookmarks ?? 0}`,
-    `Jobs: всего ${jobs.total_jobs ?? 0}, completed ${jobs.completed_jobs ?? 0}`,
+    `Bookmarks: ${bookmarks.total_bookmarks ?? 0}`,
+    `Jobs: total ${jobs.total_jobs ?? 0}, completed ${jobs.completed_jobs ?? 0}`,
     `Tasks: done ${tasks.done_tasks ?? 0}, failed ${tasks.failed_tasks ?? 0}`,
-    `Обогащение: ok ${content.fetched_ok ?? 0}, embedded ${content.embedded_total ?? 0}`,
+    `Enrichment: ok ${content.fetched_ok ?? 0}, embedded ${content.embedded_total ?? 0}`,
   ];
   if (uiStateLine) lines.push('', uiStateLine);
   if (data?.recentJobs?.length) {
-    lines.push('', 'Последние jobs:');
+    lines.push('', 'Recent jobs:');
     for (const j of data.recentJobs.slice(0, 3)) {
       lines.push(`  • ${j.jobId} ${j.status} ${j.processedItems}/${j.totalItems}`);
     }

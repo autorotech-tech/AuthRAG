@@ -1,5 +1,5 @@
 /**
- * Swoop UI живёт на корне домена; Supabase API — под /supabase (как в agent-api SUPABASE_URL).
+ * Swoop UI lives at the domain root; Supabase API — under /supabase (same as SUPABASE_URL in agent-api).
  */
 function supabasePublicRoot(apiBase) {
   const b = String(apiBase || '')

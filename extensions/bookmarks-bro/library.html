@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
@@ -47,21 +47,21 @@
     </style>
   </head>
   <body>
-    <h1>Библиотека закладок</h1>
-    <p class="muted">Фильтрация по категориям и тегам из enrichment. Выберите строки и импортируйте в папку «Bookmarks Bro Import» (Other bookmarks).</p>
+    <h1>Bookmark Library</h1>
+    <p class="muted">Filter by categories and tags from enrichment. Select rows to import them into the "Bookmarks Bro Import" folder (Other bookmarks).</p>
     <div class="toolbar">
       <div>
-        <label><span>Поиск</span><input id="q" type="search" placeholder="title, URL, summary" /></label>
+        <label><span>Search</span><input id="q" type="search" placeholder="title, URL, summary" /></label>
       </div>
       <div>
-        <label><span>Категория</span><select id="category"><option value="">— любая —</option></select></label>
+        <label><span>Category</span><select id="category"><option value="">— any —</option></select></label>
       </div>
       <div>
-        <label><span>Тег</span><select id="tag"><option value="">— любой —</option></select></label>
+        <label><span>Tag</span><select id="tag"><option value="">— any —</option></select></label>
       </div>
       <div>
-        <label><span>Статус fetch</span><select id="fetchStatus">
-          <option value="">— любой —</option>
+        <label><span>Fetch status</span><select id="fetchStatus">
+          <option value="">— any —</option>
           <option value="ok">ok</option>
           <option value="failed">failed</option>
           <option value="blocked">blocked</option>
@@ -69,24 +69,24 @@
         </select></label>
       </div>
       <div>
-        <label><span>Сортировка</span><select id="sort">
-          <option value="updated">Обновление</option>
-          <option value="title">Заголовок</option>
-          <option value="created">Первое появление</option>
+        <label><span>Sort by</span><select id="sort">
+          <option value="updated">Last Updated</option>
+          <option value="title">Title</option>
+          <option value="created">Date Created</option>
         </select></label>
       </div>
       <div>
-        <label><span>Порядок</span><select id="order">
-          <option value="desc">По убыванию</option>
-          <option value="asc">По возрастанию</option>
+        <label><span>Order</span><select id="order">
+          <option value="desc">Descending</option>
+          <option value="asc">Ascending</option>
         </select></label>
       </div>
     </div>
     <div class="btn-row">
-      <button type="button" class="primary" id="loadBtn">Обновить</button>
-      <button type="button" class="secondary" id="importBtn">Импорт выбранных в браузер</button>
+      <button type="button" class="primary" id="loadBtn">Reload</button>
+      <button type="button" class="secondary" id="importBtn">Import selected to browser</button>
       <label style="display:flex;align-items:center;gap:6px;font-size:13px;">
-        <input type="checkbox" id="selectAll" /> Выбрать всё на странице
+        <input type="checkbox" id="selectAll" /> Select all on page
       </label>
     </div>
     <div id="toast"></div>
@@ -95,19 +95,19 @@
         <thead>
           <tr>
             <th style="width:32px;"></th>
-            <th>Заголовок / URL</th>
-            <th>Категория</th>
-            <th>Теги</th>
-            <th>Статус</th>
+            <th>Title / URL</th>
+            <th>Category</th>
+            <th>Tags</th>
+            <th>Status</th>
           </tr>
         </thead>
         <tbody id="tbody"></tbody>
       </table>
     </div>
     <div class="pager">
-      <button type="button" class="secondary" id="prevBtn">Назад</button>
+      <button type="button" class="secondary" id="prevBtn">Prev</button>
       <span id="pageInfo"></span>
-      <button type="button" class="secondary" id="nextBtn">Вперёд</button>
+      <button type="button" class="secondary" id="nextBtn">Next</button>
     </div>
     <script src="extension-config.js"></script>
     <script src="library.js"></script>

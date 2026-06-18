@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -25,7 +25,7 @@
   <body>
     <h1>Bookmarks Bro Settings</h1>
     <p class="build" id="buildLabel"></p>
-    <p class="hint">Настройки интеграции с agent-api. Вход пользователя — в popup расширения.</p>
+    <p class="hint">agent-api integration settings. User login is handled in the extension popup.</p>
 
     <div class="field">
       <label for="apiBase">API Base</label>
@@ -56,7 +56,7 @@
       <button id="logoutBtn" type="button" style="background:#991b1b;">Sign out</button>
     </div>
     <p class="hint" style="margin-top:10px">
-      Test Connection: bootstrap → metrics → GET workspace-ui-state. Resolve workspace вызывает POST workspaces/ensure.
+      Test Connection: bootstrap → metrics → GET workspace-ui-state. Resolve workspace triggers POST workspaces/ensure.
     </p>
     <div id="status"></div>
 

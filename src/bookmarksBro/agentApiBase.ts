@@ -1,7 +1,7 @@
 /**
- * База URL для запросов к agent-api (Bookmarks Bro, knowledge export).
- * Пусто → относительные пути `/api/v1/*` (dev: прокси Vite; prod: nginx на том же хосте что SPA).
- * Явный URL → нужен для сборок, где UI и API на разных origin (Tauri webview, расширение, отдельный CDN).
+ * Base URL for agent-api queries (Bookmarks Bro, knowledge export).
+ * Empty → relative paths `/api/v1/*` (dev: Vite proxy; prod: nginx on the same host as the SPA).
+ * Explicit URL → needed for builds where UI and API are on different origins (Tauri webview, extension, separate CDN).
  */
 export function bookmarksAgentApiBase(): string {
   const raw = import.meta.env.VITE_AGENT_API_BASE

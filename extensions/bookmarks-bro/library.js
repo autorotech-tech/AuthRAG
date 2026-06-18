@@ -1,7 +1,7 @@
 const DEFAULT_API = BB_EXTENSION.apiBaseDefault;
 const LIMIT = 40;
 const IMPORT_FOLDER = 'Bookmarks Bro Import';
-/** «Другие закладки» в Chromium */
+/** "Other Bookmarks" in Chromium */
 const OTHER_BOOKMARKS_PARENT = '2';
 
 const qEl = document.getElementById('q');
@@ -38,7 +38,7 @@ async function fetchAgentJson(url, options = {}) {
       response = await fetch(url, options);
       break;
     } catch {
-      if (a === 3) throw new Error('Сеть недоступна');
+      if (a === 3) throw new Error('Network unavailable');
       await sleep(a * 500);
     }
   }
@@ -158,8 +158,8 @@ async function loadFacets() {
     `${apiBase}/api/v1/bookmarks/library/facets?workspaceId=${encodeURIComponent(workspaceId)}`,
     { headers },
   );
-  fillSelect(categoryEl, data.categories || [], '— любая —');
-  fillSelect(tagEl, data.tags || [], '— любой —');
+  fillSelect(categoryEl, data.categories || [], '— any —');
+  fillSelect(tagEl, data.tags || [], '— any —');
 }
 
 function renderRows(items) {
@@ -213,12 +213,12 @@ async function loadPage() {
   if (fs) params.set('fetchStatus', fs);
 
   loadBtn.disabled = true;
-  setToast('Загрузка…');
+  setToast('Loading…');
   try {
     const data = await fetchAgentJson(`${apiBase}/api/v1/bookmarks/library?${params}`, { headers });
     total = Number(data.total || 0);
     renderRows(data.items);
-    pageInfo.textContent = `Позиции ${offset + 1}–${offset + (data.items?.length || 0)} из ${total}`;
+    pageInfo.textContent = `Items ${offset + 1}–${offset + (data.items?.length || 0)} of ${total}`;
     setToast('');
   } catch (e) {
     setToast(String(e.message || e), true);
@@ -240,11 +240,11 @@ async function findOrCreateImportFolder() {
 async function importSelected() {
   const picks = [...tbody.querySelectorAll('input.pick:checked')];
   if (!picks.length) {
-    setToast('Отметьте хотя бы одну закладку.', true);
+    setToast('Select at least one bookmark.', true);
     return;
   }
   importBtn.disabled = true;
-  setToast('Импорт…');
+  setToast('Importing…');
   try {
     const parentId = await findOrCreateImportFolder();
     let n = 0;
@@ -255,9 +255,9 @@ async function importSelected() {
       await chrome.bookmarks.create({ parentId, title, url });
       n += 1;
     }
-    setToast(`Импортировано в "${IMPORT_FOLDER}": ${n} закладок.`);
+    setToast(`Imported into "${IMPORT_FOLDER}": ${n} bookmarks.`);
   } catch (e) {
-    setToast(`Импорт: ${e.message || e}`, true);
+    setToast(`Import: ${e.message || e}`, true);
   } finally {
     importBtn.disabled = false;
   }
@@ -311,6 +311,6 @@ qEl.addEventListener('keydown', (ev) => {
     await loadFacets();
     await loadPage();
   } catch (e) {
-    setToast(`Ошибка: ${e.message || e}`, true);
+    setToast(`Error: ${e.message || e}`, true);
   }
 })();

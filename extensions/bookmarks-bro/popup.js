@@ -53,7 +53,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Окно входа — компактный popup поверх рабочего стола */
+/** Login window — compact popup overlaying the desktop */
 function openAuthPopupWindow() {
   const width = Math.max(400, Math.min(520, Math.floor((screen.availWidth || 900) * 0.42)));
   const height = Math.max(640, Math.min(780, Math.floor((screen.availHeight || 900) * 0.78)));
@@ -94,7 +94,7 @@ async function fetchAgentJson(url, options = {}) {
   }
   if (!response) {
     const reason = networkErr?.message ? String(networkErr.message) : 'network error';
-    throw new Error(`Сеть недоступна (${reason}). Проверьте доступ к ${url}`);
+    throw new Error(`Network unavailable (${reason}). Check access to ${url}`);
   }
   const raw = await response.text();
   let data = null;
@@ -114,7 +114,7 @@ async function fetchAgentJson(url, options = {}) {
     const detail = data && typeof data === 'object' && data.detail != null ? String(data.detail) : null;
     const fallback =
       raw.trim().startsWith('<') || (!jsonOk && snippet)
-        ? `HTTP ${response.status}: сервер вернул HTML/не JSON (${snippet.slice(0, 80)}…)`
+        ? `HTTP ${response.status}: server returned HTML/non-JSON (${snippet.slice(0, 80)}...)`
         : `HTTP ${response.status}${snippet ? `: ${snippet}` : ''}`;
     const e = new Error(detail || fallback);
     e.status = response.status;
@@ -122,7 +122,7 @@ async function fetchAgentJson(url, options = {}) {
   }
   if (!jsonOk) {
     throw new Error(
-      `Ожидался JSON, пришла страница ошибки или HTML. Проверьте URL API и прокси /api/v1/ на swoop. (${snippet.slice(0, 100)}…)`,
+      `Expected JSON, got HTML or error page. Check API URL and Vite/Nginx proxy configuration. (${snippet.slice(0, 100)}...)`,
     );
   }
   return data;
@@ -180,8 +180,8 @@ async function updateAuthHint() {
   const loggedIn = Boolean(saved.userAccessToken?.trim?.());
   if (authHintEl) {
     authHintEl.textContent = loggedIn
-      ? `Аккаунт: ${String(saved.userEmail || 'вход выполнен')}`
-      : 'Вход не выполнён — по Sync откроется окно авторизации.';
+      ? `Account: ${String(saved.userEmail || 'signed in')}`
+      : 'Not signed in. Sync will open the authorization window.';
   }
   syncBtn.disabled = false;
   statusBtn.disabled = false;
@@ -223,7 +223,7 @@ async function ensureUserSession(apiBaseRaw) {
   try {
     await refreshUserSession(apiBase);
   } catch {
-    // гостевой режим для AI/bootstrap при отсутствии сессии
+    // guest mode for AI/bootstrap in case of missing session
   }
 }
 
@@ -298,7 +298,7 @@ async function loadSettings() {
   try {
     workspaceId = await maybeResolveWorkspaceId(apiBase);
   } catch {
-    // оставляем сохранённый id
+    // keep the saved id
   }
 
   await chrome.storage.local.set({
@@ -349,7 +349,7 @@ async function syncBookmarks() {
 
   if (!saved.userAccessToken || !String(saved.userAccessToken).trim()) {
     openAuthPopupWindow();
-    setStatus('Откройте окно входа, авторизуйтесь — затем снова нажмите Sync.');
+    setStatus('Please open the login window, authenticate, then click Sync again.');
     return;
   }
 
@@ -394,12 +394,12 @@ async function syncBookmarks() {
     });
     if (Number(syncData.accepted || 0) > 0) {
       setStatus(
-        `Синхронизация запущена.\nJob: ${syncData.jobId}\nПринято: ${syncData.accepted}, дубликатов: ${syncData.deduplicated}\nОбработка в фоне (popup можно закрыть).`,
+        `Sync started.\nJob: ${syncData.jobId}\nAccepted: ${syncData.accepted}, duplicates: ${syncData.deduplicated}\nProcessing in background (you can close popup).`,
       );
     } else {
       await chrome.runtime.sendMessage({ type: 'bookmarksBro:clearActiveJob' });
       setStatus(
-        `Синхронизация без новых закладок.\nJob: ${syncData.jobId}\nAccepted: ${syncData.accepted}, dedup: ${syncData.deduplicated}.`,
+        `Sync complete (no new bookmarks).\nJob: ${syncData.jobId}\nAccepted: ${syncData.accepted}, dedup: ${syncData.deduplicated}.`,
       );
     }
     await updateAuthHint();
@@ -444,19 +444,19 @@ function parseOverviewToPicks(overview) {
 async function aiSearchBookmarks() {
   const query = (aiTaskInput?.value || '').trim();
   if (query.length < 5) {
-    setStatus('Введите запрос для AI-поиска (минимум 5 символов).');
+    setStatus('Enter an AI Search query (minimum 5 characters).');
     return;
   }
   const saved = await chrome.storage.local.get(['apiBase', 'workspaceId']);
   const apiBase = (saved.apiBase || DEFAULTS.apiBase).trim().replace(/\/$/, '');
   const workspaceId = (saved.workspaceId || DEFAULTS.workspaceId).trim();
   if (!apiBase || !workspaceId) {
-    setStatus('Не настроены API Base / Workspace ID.');
+    setStatus('API Base or Workspace ID not configured.');
     return;
   }
 
   aiSearchBtn.disabled = true;
-  setStatus('AI-поиск…');
+  setStatus('AI Searching...');
   try {
     const searchMode = String(searchModeSelect?.value || DEFAULTS.searchMode);
     await chrome.storage.local.set({ searchMode });
@@ -481,7 +481,7 @@ async function aiSearchBookmarks() {
     }
 
     if (!picks.length) {
-      setStatus(`AI search:\n${result?.overview || 'Рекомендаций пока нет. Запустите Sync и дождитесь enrichment.'}`);
+      setStatus(`AI search:\n${result?.overview || 'No recommendations yet. Start Sync and wait for enrichment.'}`);
       return;
     }
 
@@ -491,7 +491,7 @@ async function aiSearchBookmarks() {
       candidateCount: result?.candidateCount || picks.length,
       picks,
     });
-    setStatus('AI-поиск готов — открыта вкладка с результатами.');
+    setStatus('AI search complete — results tab opened.');
   } catch (err) {
     setStatus(`AI search failed: ${err.message || err}`);
   } finally {
@@ -504,19 +504,19 @@ async function refreshJobStatus() {
   const apiBase = (saved.apiBase || DEFAULTS.apiBase).trim().replace(/\/$/, '');
   const jobId = currentJobId || (await chrome.storage.local.get(['lastJobId'])).lastJobId;
   if (!apiBase || !jobId) {
-    setStatus('Нет apiBase или last Job ID.');
+    setStatus('Missing apiBase or last Job ID.');
     return;
   }
 
   statusBtn.disabled = true;
-  setStatus('Загрузка статуса job…');
+  setStatus('Loading job status...');
   try {
     const headers = await getAuthorizedHeaders(apiBase);
     const data = await fetchAgentJson(`${apiBase}/api/v1/bookmarks/sync/jobs/${jobId}`, {
       headers: { Authorization: headers.Authorization },
     });
     setStatus(
-      `Job ${jobId}: ${data.status}\nОбработано: ${data.processedItems}/${data.totalItems}\nОшибок: ${data.failedItems}\nЗавершён: ${formatDate(data.finishedAt)}`,
+      `Job ${jobId}: ${data.status}\nProcessed: ${data.processedItems}/${data.totalItems}\nFailed: ${data.failedItems}\nFinished: ${formatDate(data.finishedAt)}`,
     );
   } catch (err) {
     setStatus(`Status check failed: ${err.message || err}`);
@@ -591,6 +591,6 @@ chrome.storage.onChanged.addListener((changes, area) => {
 loadSettings()
   .then(() => updateAuthHint())
   .then(() => {
-    setStatus('Нажмите Sync для отправки закладок или используйте AI-поиск.');
+    setStatus('Click Sync to upload bookmarks or use AI Search.');
   })
   .catch((err) => setStatus(`Init failed: ${err.message || err}`));
