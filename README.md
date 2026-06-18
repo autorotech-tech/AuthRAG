@@ -1,43 +1,64 @@
-# AuthRAG — Bookmarks Bro
+# AuthRAG — Keep It For Me (Keept)
 
-**AuthRAG** — выделенный репозиторий продукта **Bookmarks Bro**: authenticated RAG поверх личной базы знаний (закладки, заметки, Telegram, Obsidian) с multi-tenant изоляцией через `workspace_id`.
+**AuthRAG** (`bookmarks-bro` branch) — зеркало продукта **Keep It For Me** (Keept, `keept.me`) для Google Antigravity.  
+Код: `bookmarks-bro` / `bookmarksBro`. Source of truth: [autorotech-tech/website](https://github.com/autorotech-tech/website) `main`.
 
-Исходный монорепозиторий: [autoro.tech/website](https://github.com/autorotech-tech/website) (ветка `bookmarks-bro` здесь — срез для автономной разработки).
+## Antigravity: первые 5 минут
+
+1. Вставь в чат целиком: **`docs/bookmarks-bro/ANTIGRAVITY-HANDOFF.md`**
+2. Auth & staging: **`docs/bookmarks-bro/AUTH-SETUP.md`**
+3. Phase 1 задачи: **`docs/bookmarks-bro/ANTIGRAVITY-KEEPT-BRIEF.md`**
+4. Архитектура Swoop × Keept: **`docs/bookmarks-bro/ANTIGRAVITY-SWOOP-KEEPT.md`**
+5. Карта кода: `bash scripts/setup-understand-anything.sh` → `/understand src/bookmarksBro agent-api extensions/bookmarks-bro --language en`
+
+Полный индекс: **`docs/bookmarks-bro/README.md`**
 
 ## Состав репозитория
 
 | Путь | Назначение |
 |------|------------|
-| `src/bookmarksBro/` | React UI приложения (Search, Notes, Ideas, Reminders, Knowledge) |
-| `src/components/AdminBookmarksBro.tsx` | Операторская панель Swoop |
-| `agent-api/` | Backend: bookmarks, knowledge, embeddings, Obsidian sync |
-| `extensions/bookmarks-bro/` | Chrome/Edge расширение для sync закладок |
-| `ops/bookmarks-bro-supabase/` | Изолированный Supabase stack (Variant A) |
-| `docs/` | Техдоки, тестирование, multi-user |
-| `Autoro/Strategy/` | Стратегия единой KB (из Obsidian) |
-| `ROADMAP.md` | **Главный план для Antigravity** |
-| `GEMINI.md` | Настройки Google Antigravity |
+| `src/` | React SPA (Vite) — маршрут `/bookmarks-bro` |
+| `src/bookmarksBro/` | Keept UI |
+| `agent-api/` | FastAPI backend |
+| `extensions/bookmarks-bro/` | Chrome MV3 extension |
+| `ops/bookmarks-bro-supabase/` | Изолированный BB Supabase |
+| `docs/bookmarks-bro/` | Handoff, auth, testing, architecture |
+| `package.json` | `npm run dev`, `npm run build`, smoke scripts |
+| `GEMINI.md` / `AGENTS.md` | Правила Antigravity |
 
-## Быстрый старт (dev)
+## Локальная разработка
 
 ```bash
-# Backend smoke (нужен Postgres + env из website)
-cd agent-api && python -m py_compile main.py
+npm install
+cp .env.example .env   # заполнить BB anon key — см. AUTH-SETUP.md (не коммитить .env)
+npm run dev            # SPA + proxy /api/v1 → agent-api:8900
 
-# Extension package
-cd extensions/bookmarks-bro && zip -r ../bookmarks-bro.zip .
+cd agent-api && pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8900
 
-# UI — собирается в контексте website (Vite); см. ROADMAP Phase 0
+npm run build
+npm run bookmarks-bro:smoke
 ```
 
-## Документация
+Extension: Chrome → Load unpacked → `extensions/bookmarks-bro/`
 
-- [docs/ANTIGRAVITY-INFRA-BRIEF.md](./docs/ANTIGRAVITY-INFRA-BRIEF.md) — **инфра + UI + extension для Antigravity**
-- [ROADMAP.md](./ROADMAP.md) — фазы, критерии, задачи для агента
-- [docs/bookmarks-bro/TESTING.md](./docs/bookmarks-bro/TESTING.md)
-- [docs/bookmarks-bro/ADMIN-MULTIUSER.md](./docs/bookmarks-bro/ADMIN-MULTIUSER.md)
-- [Autoro/Strategy/Unified Knowledge Base Plan.md](./Autoro/Strategy/Unified%20Knowledge%20Base%20Plan.md)
+## Staging (без секретов в git)
 
-## Лицензия
+| Service | URL |
+|---------|-----|
+| Keept app | https://swoop.autoro.tech/bookmarks-bro |
+| BB Supabase | https://swoop.autoro.tech/bb-supabase |
+| agent-api | https://swoop.autoro.tech/api/v1/health |
 
-Код наследует политику основного репозитория Autoro.tech.
+Секреты: VPS `vladx@46.250.228.229` или оператор — см. **AUTH-SETUP.md §4**.
+
+## Sync из website (Cursor)
+
+```bash
+npm run keept:sync-authrag:apply
+```
+
+## Дополнительно
+
+- [ROADMAP.md](./ROADMAP.md) — фазы (legacy)
+- [docs/ANTIGRAVITY-INFRA-BRIEF.md](./docs/ANTIGRAVITY-INFRA-BRIEF.md) — инфра brief

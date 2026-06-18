@@ -1,62 +1,86 @@
-# GEMINI.md — Antigravity для AuthRAG / Keep It For Me (`keept.me`)
+# GEMINI.md — Google Antigravity
 
-Настройки для **Google Antigravity** в репозитории [autorotech-tech/AuthRAG](https://github.com/autorotech-tech/AuthRAG).
+Настройки для **Antigravity** в этом репозитории. Общие правила и маршрутизация skills: см. `[AGENTS.md](AGENTS.md)`.
 
-**Codename:** BrowserBro · **Product:** Keep It For Me · **Domain:** keept.me · **Legacy code paths:** Bookmarks Bro
+## Подключение skills
 
-## Первое действие в каждой сессии
+Antigravity читает skills из:
 
-1. Прочитать **[docs/ANTIGRAVITY-KEEPT-BRIEF.md](./docs/ANTIGRAVITY-KEEPT-BRIEF.md)** — бренд, Phase 1 locked decisions, naming rules.
-2. Прочитать **[docs/ANTIGRAVITY-SWOOP-KEEPT.md](./docs/ANTIGRAVITY-SWOOP-KEEPT.md)** — Swoop tools, multi-user, personal Telegram bot.
-3. Прочитать **[docs/ANTIGRAVITY-INFRA-BRIEF.md](./docs/ANTIGRAVITY-INFRA-BRIEF.md)** — БД, env, UI, Tauri, extension.
-4. Прочитать **[ROADMAP.md](./ROADMAP.md)** — фазы, блокеры, acceptance criteria.
+- **Глобально:** `~/.gemini/antigravity/skills/<имя>/SKILL.md`
+- **Проект:** `.agent/skills/<имя>/SKILL.md` (имеет приоритет над глобальными с тем же именем)
 
-## Ветка и remotes
-
-- Основная ветка разработки: **`bookmarks-bro`**
-- Прод-стейджинг UI: `swoop.autoro.tech` (монорепо website)
-- Этот репо — **срез** для фокусной разработки AuthRAG
-
-## Skills (подключить из website monorepo)
+Чтобы подтянуть **всю** коллекцию из Cursor (`~/.cursor/skills/skills/`), выполните из корня репозитория:
 
 ```bash
-# в корне website (если есть)
 bash scripts/link-antigravity-skills.sh
 ```
 
-| Задача | Skill |
-|--------|-------|
-| React UI | `modern-web-guidance`, `frontend-dev-guidelines` |
-| Extension E2E | `playwright-skill` |
-| API bugs | `systematic-debugging`, `cbh-debug-playbook` |
-| Многофазный sprint | `antigravity-workflows` |
+Перезапустите Antigravity после первого подключения или после массового обновления skills.
 
-## OpenRouter (обязательно)
+## Keep It For Me (Keept) — handoff для Antigravity
 
-- Модели только: `<provider>/<model>` (например `anthropic/claude-3.7-sonnet`).
-- Ключи — через Swoop Admin / `service_settings`, не в репозитории.
+Продукт **Keep It For Me** (бренд **Keept**, домен **keept.me**). В коде Phase 1 пути **`bookmarks-bro`** / **`bookmarksBro`** не переименовывать.
 
-## Типовые команды
+| Роль | Репозиторий | Ветка |
+|------|-------------|-------|
+| Source of truth (Cursor) | `github.com/autorotech-tech/website` | `main` |
+| Зеркало для Antigravity | `github.com/autorotech-tech/AuthRAG` | `bookmarks-bro` |
+
+**Первое сообщение в новой сессии Antigravity:** вставьте целиком `docs/bookmarks-bro/ANTIGRAVITY-HANDOFF.md`.
+
+**Синхронизация website → AuthRAG** (из корня website):
 
 ```bash
-# Backend syntax
-python3 -m py_compile agent-api/main.py
-
-# Smoke (нужны env)
-node scripts/bookmarks-bro-smoke.mjs
-
-# Extension zip
-cd extensions/bookmarks-bro && zip -r ../bookmarks-bro.zip .
+npm run keept:sync-authrag          # dry-run
+npm run keept:sync-authrag:apply    # rsync + git push в AuthRAG
 ```
 
-## Правила для агента
+**Карта кодовой базы** — [Understand Anything](https://github.com/autorotech-tech/Understand-Anything):
 
-- **Не** переходить к multi-tenant (Phase 2), пока не закрыты auth + taxonomy + EN UI (Phase 1).
-- **Не** доверять `workspaceId` с клиента без JWT middleware.
-- **Не** коммитить `.env`, API keys, `service_settings` dumps.
-- Минимальный diff; не рефакторить Swoop-несвязанный код.
-- После изменений фронта в website: `npm run build`.
+```bash
+npm run understand-anything:install   # один раз; затем перезапуск Antigravity
+```
 
-## Постановка задачи
+В чате Antigravity:
 
-Используйте шаблон из раздела **«Шаблон задачи для Antigravity»** в [ROADMAP.md](./ROADMAP.md).
+```
+/understand src/bookmarksBro agent-api extensions/bookmarks-bro --language en
+/understand-dashboard
+```
+
+Граф сохраняется в `.understand-anything/knowledge-graph.json` (в `.gitignore`).
+
+**Phase 1 открытые задачи:** см. `docs/bookmarks-bro/ANTIGRAVITY-KEEPT-BRIEF.md` — AUTH-SETUP, taxonomy, EN UI, search filters.
+
+**Staging:** `https://swoop.autoro.tech/bookmarks-bro`, BB Supabase: `…/bb-supabase`.
+
+**Память:** Obsidian — заметки `Keep It For Me — Antigravity Handoff`, `Bookmarks Bro Progress`.
+
+
+- **Семантически:** формулируйте задачу обычным языком — агент подхватывает skill по `description` в `SKILL.md`.
+- **Явно:** можно сослаться на сценарий, например: «следуй workflow из `antigravity-workflows` для SaaS MVP».
+- **Каталог `/learn`:** опционально — `git clone https://github.com/agentskill-sh/ags.git ~/.gemini/antigravity/skills/learn`, затем в чате команды вида `/learn …`.
+
+## OpenRouter policy
+
+- Для OpenRouter в любом конфиге использовать только полный ID модели: `<provider>/<model>`.
+- Не использовать короткие имена (`claude-3.7-sonnet`, `gpt-4o-mini`, `gemini-2.5-pro`) без провайдера.
+- В Swoop админке ключ задаётся в `Admin -> Settings -> OpenRouter`.
+- Рекомендуемые модели:
+  - default: `anthropic/claude-3.7-sonnet`
+  - fallback: `openai/gpt-4o-mini`
+
+### Cursor + OpenRouter
+
+- При добавлении модели в Cursor вводить exact model ID вручную и подтверждать Enter.
+- После изменения API key/model в Cursor: перезапуск Cursor + новый чат.
+
+## Стек проекта (кратко)
+
+Vite, React 18, TypeScript, Tailwind, Supabase client — см. `package.json`. Не коммитить секреты.
+
+## MCP vs Skills
+
+- **Skills** — методология (как и когда).
+- **MCP** — доступ к внешним системам; настраивается в IDE отдельно от skills.
+

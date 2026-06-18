@@ -27,6 +27,9 @@ MAX_MODELS_PER_PROVIDER = 20
 HTTP_TIMEOUT = 25
 _CATALOG_CACHE_TTL_SEC = 900.0
 _CATALOG_CACHE: Dict[str, Any] = {"ts": 0.0, "catalogs": None}
+_OPENROUTER_META_CACHE_TTL_SEC = float(os.environ.get("OPENROUTER_META_CACHE_TTL_SEC", "86400"))
+_OPENROUTER_META_CACHE: Dict[str, Any] = {"ts": 0.0, "models": None}
+OPENROUTER_CATALOG_REFRESH_SEC = float(os.environ.get("OPENROUTER_CATALOG_REFRESH_SEC", "21600"))
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
 GROQ_BASE = "https://api.groq.com/openai/v1"
@@ -153,33 +156,160 @@ def fetch_gemini_models(api_key: str) -> List[str]:
     return models[:MAX_MODELS_PER_PROVIDER]
 
 
-def fetch_openrouter_models(api_key: str) -> List[str]:
+def _openrouter_item_is_chat_model(item: Dict[str, Any]) -> bool:
+    mid = str(item.get("id") or "").strip()
+    if not mid:
+        return False
+    arch = item.get("architecture") if isinstance(item.get("architecture"), dict) else {}
+    outputs = arch.get("output_modalities") if isinstance(arch.get("output_modalities"), list) else []
+    if outputs and "text" not in outputs:
+        return False
+    if any(x in mid.lower() for x in ("embed", "moderation", "whisper", "dall-e")):
+        return False
+    return True
+
+
+def _is_free_openrouter_model(meta: Dict[str, Any]) -> bool:
+    mid = str(meta.get("id") or "").lower()
+    if ":free" in mid or mid.endswith("/free"):
+        return True
+    pricing = meta.get("pricing") if isinstance(meta.get("pricing"), dict) else {}
+    try:
+        prompt = float(pricing.get("prompt") or 0)
+        completion = float(pricing.get("completion") or 0)
+        return prompt == 0 and completion == 0
+    except (TypeError, ValueError):
+        return False
+
+
+def _parse_openrouter_model_meta(item: Dict[str, Any]) -> Dict[str, Any]:
+    mid = str(item.get("id") or "").strip()
+    pricing_raw = item.get("pricing") if isinstance(item.get("pricing"), dict) else {}
+    meta = {
+        "id": mid,
+        "name": str(item.get("name") or mid),
+        "description": str(item.get("description") or "")[:280],
+        "context_length": int(item.get("context_length") or 0),
+        "pricing": {
+            "prompt": str(pricing_raw.get("prompt") or "0"),
+            "completion": str(pricing_raw.get("completion") or "0"),
+        },
+        "created": int(item.get("created") or 0),
+    }
+    meta["is_free"] = _is_free_openrouter_model(meta)
+    return meta
+
+
+def fetch_openrouter_catalog_meta(api_key: str = "") -> List[Dict[str, Any]]:
+    """Полный каталог OpenRouter (публичный /models; ключ опционален)."""
+    headers: Dict[str, str] = {"Accept": "application/json"}
     key = (api_key or "").strip()
-    if not key:
-        return []
-    code, body = _http_get_json(
-        f"{OPENROUTER_BASE}/models",
-        headers={"Authorization": f"Bearer {key}", "Accept": "application/json"},
-    )
+    if key:
+        headers["Authorization"] = f"Bearer {key}"
+    code, body = _http_get_json(f"{OPENROUTER_BASE}/models", headers=headers)
     if code != 200 or not isinstance(body, dict):
         return []
-    ranked: List[Tuple[int, str]] = []
+    ranked: List[Tuple[int, Dict[str, Any]]] = []
     for item in body.get("data") or []:
-        if not isinstance(item, dict):
+        if not isinstance(item, dict) or not _openrouter_item_is_chat_model(item):
             continue
-        mid = str(item.get("id") or "").strip()
-        if not mid:
-            continue
-        arch = item.get("architecture") if isinstance(item.get("architecture"), dict) else {}
-        outputs = arch.get("output_modalities") if isinstance(arch.get("output_modalities"), list) else []
-        if outputs and "text" not in outputs:
-            continue
-        if any(x in mid.lower() for x in ("embed", "moderation", "whisper", "dall-e")):
-            continue
-        created = int(item.get("created") or 0)
-        ranked.append((created, mid))
-    ranked.sort(key=lambda x: (x[0], x[1]), reverse=True)
-    return [mid for _, mid in ranked[:MAX_MODELS_PER_PROVIDER]]
+        meta = _parse_openrouter_model_meta(item)
+        ranked.append((int(meta.get("created") or 0), meta))
+    ranked.sort(key=lambda x: (x[0], str(x[1].get("id") or "")), reverse=True)
+    return [meta for _, meta in ranked]
+
+
+def get_cached_openrouter_meta(settings: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    now = time.monotonic()
+    cached = _OPENROUTER_META_CACHE.get("models")
+    if cached is not None and (now - float(_OPENROUTER_META_CACHE.get("ts") or 0)) < _OPENROUTER_META_CACHE_TTL_SEC:
+        return cached
+    api_key = ""
+    if settings:
+        api_key = _first_key(settings.get("openrouter_keys")) or _first_key(settings.get("openrouter_qwen_keys"))
+    try:
+        models = fetch_openrouter_catalog_meta(api_key)
+    except Exception as exc:
+        logger.warning("fetch_openrouter_catalog_meta failed: %s", exc)
+        models = list(cached or [])
+    _OPENROUTER_META_CACHE["ts"] = now
+    _OPENROUTER_META_CACHE["models"] = models
+    return models
+
+
+def invalidate_openrouter_meta_cache() -> None:
+    _OPENROUTER_META_CACHE["ts"] = 0.0
+    _OPENROUTER_META_CACHE["models"] = None
+
+
+def invalidate_provider_catalog_cache() -> None:
+    _CATALOG_CACHE["ts"] = 0.0
+    _CATALOG_CACHE["catalogs"] = None
+
+
+def refresh_openrouter_catalog(settings: Optional[Dict[str, Any]] = None) -> Dict[str, int]:
+    """Принудительно обновить кэш OpenRouter + live provider catalogs."""
+    invalidate_openrouter_meta_cache()
+    invalidate_provider_catalog_cache()
+    if settings is None:
+        settings = {}
+    models = get_cached_openrouter_meta(settings)
+    try:
+        get_cached_provider_catalogs(settings)
+    except Exception as exc:
+        logger.warning("refresh provider catalogs failed: %s", exc)
+    free_total = sum(1 for m in models if m.get("is_free"))
+    return {"total": len(models), "free_total": free_total}
+
+
+def search_openrouter_models(
+    models: List[Dict[str, Any]],
+    query: str,
+    *,
+    limit: int = 50,
+    free_only: bool = False,
+) -> List[Dict[str, Any]]:
+    pool = [m for m in models if m.get("is_free")] if free_only else models
+    q = (query or "").strip().lower()
+    if not q:
+        return pool[: max(1, limit)]
+    out: List[Dict[str, Any]] = []
+    for item in pool:
+        mid = str(item.get("id") or "").lower()
+        name = str(item.get("name") or "").lower()
+        if q in mid or q in name:
+            out.append(item)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def format_openrouter_price(per_token: str) -> str:
+    try:
+        value = float(per_token)
+    except (TypeError, ValueError):
+        return "?"
+    if value == 0:
+        return "Free"
+    per_million = value * 1_000_000
+    if per_million < 0.01:
+        return "<$0.01"
+    if per_million < 1:
+        return f"${per_million:.2f}"
+    return f"${per_million:.0f}" if per_million >= 10 else f"${per_million:.2f}"
+
+
+def format_openrouter_context(length: int) -> str:
+    if length >= 1_000_000:
+        return f"{length / 1_000_000:.1f}M"
+    if length >= 1000:
+        return f"{round(length / 1000)}K"
+    return str(length or "?")
+
+
+def fetch_openrouter_models(api_key: str) -> List[str]:
+    meta = fetch_openrouter_catalog_meta(api_key)
+    return [str(m.get("id") or "").strip() for m in meta if m.get("id")][:MAX_MODELS_PER_PROVIDER]
 
 
 def fetch_groq_models(api_key: str) -> List[str]:
@@ -452,6 +582,25 @@ def resolve_model_for_provider(
     tier_norm = (tier or "general").strip().lower()
     if tier_norm not in _TIER_POSITIVE:
         tier_norm = "general"
+
+    routing = settings.get("agent_llm_routing")
+    if isinstance(routing, dict):
+        tier_models = routing.get("tier_models")
+        if isinstance(tier_models, dict):
+            cat_key_early = prov
+            if prov == "openrouter-qwen":
+                cat_key_early = "openrouter_qwen"
+            prov_map = tier_models.get(prov) or tier_models.get(cat_key_early)
+            if isinstance(prov_map, dict):
+                pinned = str(prov_map.get(tier_norm) or "").strip()
+                if pinned:
+                    logger.debug(
+                        "resolved model tier=%s provider=%s -> %s (tier_models)",
+                        tier_norm,
+                        prov,
+                        pinned,
+                    )
+                    return pinned
 
     cats = catalogs if catalogs is not None else get_cached_provider_catalogs(settings)
     cat_key = prov

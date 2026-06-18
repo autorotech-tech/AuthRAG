@@ -13,7 +13,7 @@ import datetime
 import re
 import shlex
 import subprocess
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 import secrets
 import logging
 import hashlib
@@ -39,8 +39,11 @@ from swoop_lmarena import (
 )
 from swoop_provider_catalog import (
     build_openai_models_list,
+    get_cached_openrouter_meta,
     get_cached_provider_catalogs,
+    refresh_openrouter_catalog,
     resolve_model_for_provider,
+    search_openrouter_models,
 )
 from swoop_expired_domains import configure_expired_domains, ensure_expired_domains_schema, router as expired_domains_router
 
@@ -217,6 +220,30 @@ async def _telegram_forward_background(url: str, body: bytes, secret: str) -> No
         logger.warning("Telegram forward failed url=%s err=%s", url, exc)
 
 
+def _openrouter_catalog_refresh_job() -> Dict[str, int]:
+    try:
+        settings = load_swoop_llm_key_settings()
+    except Exception:
+        settings = {}
+    stats = refresh_openrouter_catalog(settings)
+    logger.info(
+        "OpenRouter catalog auto-refresh: total=%s free=%s",
+        stats.get("total"),
+        stats.get("free_total"),
+    )
+    return stats
+
+
+async def _openrouter_catalog_refresh_loop() -> None:
+    interval = max(300.0, float(os.environ.get("OPENROUTER_CATALOG_REFRESH_SEC", "21600")))
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await asyncio.to_thread(_openrouter_catalog_refresh_job)
+        except Exception as exc:
+            logger.warning("OpenRouter catalog refresh loop failed: %s", exc)
+
+
 @asynccontextmanager
 async def _app_lifespan(app: FastAPI):
     """Схема bookmarks при старте; без доступной БД сервис всё равно поднимается (локальный dev)."""
@@ -231,7 +258,17 @@ async def _app_lifespan(app: FastAPI):
         ensure_telegram_assistant_schema()
     except Exception as exc:
         logger.warning("Bookmarks schema bootstrap skipped (DB unreachable?): %s", exc)
+    refresh_task: Optional[asyncio.Task] = None
+    try:
+        await asyncio.to_thread(_openrouter_catalog_refresh_job)
+    except Exception as exc:
+        logger.warning("OpenRouter catalog warm-up skipped: %s", exc)
+    refresh_task = asyncio.create_task(_openrouter_catalog_refresh_loop())
     yield
+    if refresh_task is not None:
+        refresh_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await refresh_task
 
 
 app = FastAPI(
@@ -2700,6 +2737,7 @@ def bookmarks_ai_enrich_max_calls_per_run() -> int:
 
 _SWOOP_LLM_CACHE: Dict[str, Any] = {"ts": 0.0, "settings": None}
 _SWOOP_LLM_CACHE_TTL_SEC = 45.0
+_KEY_POOL_RR_INDEX: Dict[str, int] = {}
 
 _KEY_HEALTH_STATE: Dict[str, Dict[str, Any]] = {}
 _API_KEY_POOL_META: Dict[str, List[Dict[str, Any]]] = {}
@@ -2936,6 +2974,19 @@ def _is_key_admin_disabled(provider: str, key: str) -> bool:
     return entry.get("enabled") is False
 
 
+def _get_key_pool_strategy() -> str:
+    try:
+        settings = load_swoop_llm_key_settings()
+        routing = settings.get("agent_llm_routing")
+        if isinstance(routing, dict):
+            strategy = str(routing.get("key_pool_strategy") or "fill-first").strip().lower()
+            if strategy in ("round-robin", "fill-first"):
+                return strategy
+    except Exception:
+        pass
+    return "fill-first"
+
+
 def _iter_keys_with_health(provider: str, keys: List[str]) -> List[str]:
     clean = [str(k).strip() for k in (keys or []) if str(k).strip()]
     if not clean:
@@ -2954,7 +3005,14 @@ def _iter_keys_with_health(provider: str, keys: List[str]) -> List[str]:
             inactive.append(key)
         else:
             active.append(key)
-    return active + inactive
+    ordered = active + inactive
+    if not ordered:
+        return []
+    if _get_key_pool_strategy() == "round-robin":
+        start = _KEY_POOL_RR_INDEX.get(provider, 0) % len(ordered)
+        _KEY_POOL_RR_INDEX[provider] = start + 1
+        return ordered[start:] + ordered[:start]
+    return ordered
 
 
 def _iter_keys_for_llm(provider: str, keys: List[str]):
@@ -3137,6 +3195,7 @@ def _default_agent_llm_routing() -> Dict[str, Any]:
             {"provider": "api_key_groups", "model": ""},
             {"provider": "env_openai", "model": ""},
         ],
+        "key_pool_strategy": "fill-first",
     }
 
 
@@ -3152,6 +3211,51 @@ def _coerce_routing_steps(val: Any) -> List[Dict[str, str]]:
             continue
         model = str(item.get("model") or "").strip()
         out.append({"provider": prov, "model": model})
+    return out
+
+
+def _normalize_tier_models(raw: Any) -> Dict[str, Dict[str, str]]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for prov, tiers in raw.items():
+        if not isinstance(tiers, dict):
+            continue
+        prov_key = str(prov).strip().lower()
+        if not prov_key:
+            continue
+        tier_map: Dict[str, str] = {}
+        for tier in _LLM_TIER_NAMES:
+            val = tiers.get(tier)
+            if val is not None and str(val).strip():
+                tier_map[tier] = str(val).strip()
+        if tier_map:
+            out[prov_key] = tier_map
+    return out
+
+
+def _normalize_scenarios(raw: Any) -> Dict[str, Dict[str, str]]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Dict[str, str]] = {}
+    for name, spec in raw.items():
+        if not isinstance(spec, dict):
+            continue
+        key = str(name).strip()
+        if not key:
+            continue
+        entry: Dict[str, str] = {}
+        tier_val = str(spec.get("tier") or "").strip().lower()
+        if tier_val in _LLM_TIER_NAMES:
+            entry["tier"] = tier_val
+        prov = str(spec.get("provider") or "").strip().lower()
+        if prov in _LLM_ROUTING_PROVIDERS:
+            entry["provider"] = prov
+        model = str(spec.get("model") or "").strip()
+        if model:
+            entry["model"] = model
+        if entry:
+            out[key] = entry
     return out
 
 
@@ -3172,7 +3276,21 @@ def _normalize_agent_llm_routing_payload(raw: Any) -> Dict[str, Any]:
         out_fb = fb if fb else [dict(x) for x in base["fallback"]]
     else:
         out_fb = [dict(x) for x in base["fallback"]]
-    return {"tiers": out_tiers, "fallback": out_fb}
+    strategy = str(raw.get("key_pool_strategy") or base.get("key_pool_strategy") or "fill-first").strip().lower()
+    if strategy not in ("round-robin", "fill-first"):
+        strategy = "fill-first"
+    tier_models = _normalize_tier_models(raw.get("tier_models"))
+    scenarios = _normalize_scenarios(raw.get("scenarios"))
+    result: Dict[str, Any] = {
+        "tiers": out_tiers,
+        "fallback": out_fb,
+        "key_pool_strategy": strategy,
+    }
+    if tier_models:
+        result["tier_models"] = tier_models
+    if scenarios:
+        result["scenarios"] = scenarios
+    return result
 
 
 def load_swoop_llm_key_settings() -> Dict[str, Any]:
@@ -3827,6 +3945,7 @@ def openai_chat_json_object(
     route_model_override: Optional[str] = None,
     swoop_user_email: Optional[str] = None,
     max_tokens_override: Optional[int] = None,
+    scenario: Optional[str] = None,
 ) -> ChatJsonObjectResult:
     """
     JSON-ответ чата: цепочка provider+model из agent_llm_routing (Swoop) + ключи service_settings.
@@ -3837,9 +3956,19 @@ def openai_chat_json_object(
     if not isinstance(routing, dict):
         routing = _default_agent_llm_routing()
 
+    scenario_spec: Optional[Dict[str, str]] = None
+    scenario_raw = (scenario or "").strip()
+    if scenario_raw:
+        scenarios_map = routing.get("scenarios") if isinstance(routing.get("scenarios"), dict) else {}
+        raw_spec = scenarios_map.get(scenario_raw) if isinstance(scenarios_map, dict) else None
+        if isinstance(raw_spec, dict):
+            scenario_spec = {str(k): str(v) for k, v in raw_spec.items() if v is not None}
+
     tier_raw = (tier_override or "").strip().lower()
     if tier_raw in _LLM_TIER_NAMES:
         tier = tier_raw
+    elif scenario_spec and str(scenario_spec.get("tier") or "").strip().lower() in _LLM_TIER_NAMES:
+        tier = str(scenario_spec["tier"]).strip().lower()
     else:
         tier = _classify_llm_task_tier(system_prompt, user_prompt)
 
@@ -3858,6 +3987,11 @@ def openai_chat_json_object(
     chain = tier_steps + fb_steps
     forced_provider = str(route_provider_override or "").strip().lower()
     forced_model = str(route_model_override or "").strip()
+    if not forced_provider and scenario_spec:
+        scenario_prov = str(scenario_spec.get("provider") or "").strip().lower()
+        if scenario_prov in _LLM_ROUTING_PROVIDERS:
+            forced_provider = scenario_prov
+            forced_model = str(scenario_spec.get("model") or "").strip()
     if forced_provider in _LLM_ROUTING_PROVIDERS:
         forced_step = {"provider": forced_provider, "model": forced_model}
         chain = [forced_step] + [
@@ -5079,6 +5213,7 @@ async def admin_key_health(
 @app.get("/api/v1/admin/provider-catalog")
 async def admin_provider_catalog(
     request: Request,
+    q: str = "",
     x_api_key: str = Header("", alias="X-API-Key"),
 ):
     client_ip = get_request_ip(request)
@@ -5095,9 +5230,87 @@ async def admin_provider_catalog(
 
     settings = load_swoop_llm_key_settings()
     catalogs = get_cached_provider_catalogs(settings)
+    or_meta_all = get_cached_openrouter_meta(settings)
+    query = (q or "").strip()
+    free_only = str(request.query_params.get("free") or "").strip().lower() in ("1", "true", "yes")
+    if query or free_only:
+        or_meta = search_openrouter_models(or_meta_all, query, free_only=free_only)
+    else:
+        or_meta = or_meta_all
+    or_free = [m for m in or_meta_all if m.get("is_free")]
     return {
         "status": "ok",
         "catalogs": catalogs,
+        "openrouter_meta": or_meta,
+        "openrouter_meta_free": or_free,
+        "openrouter_meta_total": len(or_meta_all),
+        "openrouter_free_total": len(or_free),
+        "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@app.get("/api/v1/openrouter/catalog")
+async def openrouter_catalog(
+    request: Request,
+    q: str = "",
+    free: str = "",
+    x_api_key: str = Header("", alias="X-API-Key"),
+):
+    """Полный каталог OpenRouter для админки (кэш 24ч, публичный upstream)."""
+    client_ip = get_request_ip(request)
+    cfg = load_agent_settings()
+    expected = str(cfg.get("agent_api_key") or "").strip()
+    if not cfg.get("agent_enabled"):
+        raise HTTPException(status_code=503, detail="Agent API is currently disabled")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Agent API key is not configured")
+    if (x_api_key or "").strip() != expected:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    if not check_rate_limit(client_ip, int(cfg.get("agent_rate_limit") or 30)):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    settings = load_swoop_llm_key_settings()
+    or_meta_all = get_cached_openrouter_meta(settings)
+    query = (q or "").strip()
+    free_only = str(free or "").strip().lower() in ("1", "true", "yes")
+    if query or free_only:
+        models = search_openrouter_models(or_meta_all, query, free_only=free_only)
+    else:
+        models = or_meta_all
+    or_free = [m for m in or_meta_all if m.get("is_free")]
+    return {
+        "status": "ok",
+        "models": models,
+        "free_models": or_free,
+        "total": len(or_meta_all),
+        "free_total": len(or_free),
+        "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
+    }
+
+
+@app.post("/api/v1/admin/openrouter/refresh")
+async def admin_openrouter_refresh(
+    request: Request,
+    x_api_key: str = Header("", alias="X-API-Key"),
+):
+    """Принудительное обновление кэша OpenRouter (тот же job, что и фоновый таймер)."""
+    client_ip = get_request_ip(request)
+    cfg = load_agent_settings()
+    expected = str(cfg.get("agent_api_key") or "").strip()
+    if not cfg.get("agent_enabled"):
+        raise HTTPException(status_code=503, detail="Agent API is currently disabled")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Agent API key is not configured")
+    if (x_api_key or "").strip() != expected:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    if not check_rate_limit(client_ip, int(cfg.get("agent_rate_limit") or 30)):
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+
+    stats = await asyncio.to_thread(_openrouter_catalog_refresh_job)
+    return {
+        "status": "ok",
+        "total": stats.get("total", 0),
+        "free_total": stats.get("free_total", 0),
         "updated_at": datetime.datetime.utcnow().isoformat() + "Z",
     }
 
