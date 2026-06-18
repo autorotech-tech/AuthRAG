@@ -1,5 +1,7 @@
 # Supabase: OAuth для расширения Bookmarks Bro
 
+> Полная EN-инструкция по auth, env и staging: **`docs/bookmarks-bro/AUTH-SETUP.md`**
+
 Агент не может войти в ваш личный [Supabase Dashboard](https://supabase.com/dashboard) — redirect URL и ключи задаёте вы. Ниже шаги и официальные ссылки.
 
 ## 1. Узнайте EXTENSION_ID

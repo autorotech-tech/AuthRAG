@@ -1,86 +1,218 @@
-# Bookmarks Bro: Authentication & OAuth Setup
+# Keep It For Me — Auth & Access Setup (Phase 1)
 
-This document describes how to configure the authentication layer (Supabase GoTrue) and social logins (Google/Microsoft OAuth) for Bookmarks Bro.
-
----
-
-## 1. Supabase Stack (Variant A - Isolated BB Stack)
-
-To keep bookmarks isolated from Swoop main metadata, it is recommended to run a separate Supabase stack:
-1. Navigate to `ops/bookmarks-bro-supabase/` on the VPS.
-2. Run `./bootstrap.sh` to initialize the project with `COMPOSE_PROJECT_NAME=supabase-bb` and offset ports.
-3. If there are network/volume conflicts or compatibility issues with legacy compose, use the recovery script:
-   ```bash
-   export COMPOSE_DIR=/home/vladx/supabase-bookmarks-bro
-   bash recover_bb_stack.sh
-   ```
-4. Apply the schema and database isolation script to the postgres container:
-   ```bash
-   cat sql/001_bookmarks_bro_isolation.sql | docker exec -i supabase-db-bb psql -U postgres -d postgres
-   ```
+> **Product:** Keep It For Me (Keept) · **Staging:** `https://swoop.autoro.tech/bookmarks-bro`  
+> **Audience:** operators and Antigravity agents · **Secrets:** never commit real keys — use VPS / Swoop Admin only
 
 ---
 
-## 2. Redirect URL Configuration (OAuth)
+## 1. Two Supabase stacks (critical)
 
-To support Google and Microsoft (Azure) OAuth flows in the Chrome extension, you must add redirect URIs to your Supabase project URL configuration:
+| Stack | URL (staging) | Used by |
+|-------|---------------|---------|
+| **Swoop (main)** | `https://swoop.autoro.tech/supabase` | Swoop admin, blog, scrapling, operator auth |
+| **BB (Bookmarks / Keept)** | `https://swoop.autoro.tech/bb-supabase` | Keept web app, Chrome extension, end users |
 
-### 2.1 Get Extension ID
-1. Open Chrome and go to `chrome://extensions`.
-2. Enable **Developer mode** in the top right.
-3. Locate the **Bookmarks Bro** extension and copy its **ID** (a 32-character string, e.g., `coafhjolmdcddkdbffkmnldpohicdphi`).
-
-### 2.2 Configure Supabase Redirect URLs
-1. Open the Supabase Dashboard for your project.
-2. Go to **Authentication** -> **URL Configuration**.
-3. Under **Redirect URLs**, add:
-   ```
-   chrome-extension://<EXTENSION_ID>/oauth-callback.html
-   ```
-   *(Replace `<EXTENSION_ID>` with your copied Chrome Extension ID).*
-
-### 2.3 Configure Provider Credentials
-1. Go to **Authentication** -> **Providers** -> **Google**.
-2. Enable Google login.
-3. Insert **Client ID** and **Client Secret** obtained from Google Cloud Console.
-4. Copy the Supabase callback URL listed under Google settings (looks like `https://<project-ref>.supabase.co/auth/v1/callback`).
-5. Open your Google Cloud Console, go to your OAuth 2.0 Web Client, and add the copied callback URL to **Authorized redirect URIs**.
-
-Repeat the same process for Azure (Microsoft Login) under **Authentication** -> **Providers** -> **Azure**.
+Keept users **must not** use Swoop operator accounts. All Keept auth goes through **BB Supabase**.
 
 ---
 
-## 3. Environment Variables
+## 2. Staging endpoints
 
-### Backend (`agent-api`)
-Ensure these values are configured in your `.env` to connect to the separate bookmarks auth stack:
-```env
+| Service | URL |
+|---------|-----|
+| Keept web app | `https://swoop.autoro.tech/bookmarks-bro` |
+| Keept admin (operators) | `https://swoop.autoro.tech/admin/bookmarks-bro` |
+| BB Supabase (Auth + REST) | `https://swoop.autoro.tech/bb-supabase` |
+| agent-api health | `https://swoop.autoro.tech/api/v1/health` |
+| VPS SSH | `vladx@46.250.228.229` (keys on operator machine only) |
+
+---
+
+## 3. Environment variables
+
+### 3.1 Frontend (`.env` / `.env.example` in website root)
+
+Copy from `.env.example`. For local dev:
+
+```bash
+# BB Auth — staging anon key from operator (Swoop / VPS .env, NOT committed)
+VITE_SUPABASE_URL=https://swoop.autoro.tech/bb-supabase
+VITE_SUPABASE_ANON_KEY=<BOOKMARKS_SUPABASE_ANON_KEY>
+
+# agent-api: leave empty in dev → Vite proxies /api/v1 → localhost:8900
+# VITE_AGENT_API_BASE=
+# VITE_AGENT_API_PROXY_TARGET=http://127.0.0.1:8900
+
+# Optional: direct agent-api key for admin panel
+# VITE_BOOKMARKS_API_KEY=<from Swoop Admin → Settings or VPS agent-api env>
+```
+
+### 3.2 agent-api (VPS `.env` or `ops/bookmarks-bro-supabase/.env.agent-api.bookmarks.example`)
+
+```bash
 BOOKMARKS_SUPABASE_URL=https://swoop.autoro.tech/bb-supabase
-BOOKMARKS_SUPABASE_ANON_KEY=your_bb_supabase_anon_key
-# Database variables (independent of Swoop main database)
-BOOKMARKS_PGHOST=supabase-db-bb
+BOOKMARKS_SUPABASE_ANON_KEY=<anon key from BB stack>
+BOOKMARKS_PGHOST=supabase-db-bb          # or host from VPS compose
 BOOKMARKS_PGPORT=5432
 BOOKMARKS_PGDATABASE=postgres
-BOOKMARKS_PGUSER=postgres
-BOOKMARKS_PGPASSWORD=your_bb_db_password
+BOOKMARKS_PGUSER=postgres              # role varies per stack — see ops README
+BOOKMARKS_PGPASSWORD=<from BB stack .env on VPS>
+
+# LLM keys: prefer Swoop Admin → Settings → OpenRouter / Provider keys
+# OpenRouter model IDs must be full: anthropic/claude-3.7-sonnet
 ```
 
-### Frontend (`website`)
-Configure the variables in the root `.env` or during compilation:
-```env
-VITE_SUPABASE_URL=https://swoop.autoro.tech/bb-supabase
-VITE_SUPABASE_ANON_KEY=your_bb_supabase_anon_key
+Full template: `ops/bookmarks-bro-supabase/.env.agent-api.bookmarks.example`
+
+### 3.3 Chrome extension (`extensions/bookmarks-bro/`)
+
+In extension **Settings** (or `extension-config.js` defaults for testing):
+
+| Field | Staging value |
+|-------|---------------|
+| API Base | `https://swoop.autoro.tech` |
+| Supabase Auth Path | `/bb-supabase` |
+| Workspace | auto via `POST /api/v1/bookmarks/workspaces/ensure` after login |
+
+---
+
+## 4. Where operators get secrets (not in git)
+
+| Secret | Location |
+|--------|----------|
+| BB anon key, DB password | VPS: BB Supabase `.env` under compose dir (e.g. `/home/vladx/supabase-bookmarks-bro`) |
+| agent-api provider keys | Swoop **Admin → Settings → OpenRouter** / Provider API Keys |
+| Google OAuth (BB) | Google Cloud Console + BB Supabase **Authentication → Providers → Google** |
+| Microsoft OAuth (BB) | Azure App Registration + BB Supabase **Providers → Azure** |
+| SSH / deploy | Operator SSH key to `46.250.228.229` |
+
+Run on VPS to inspect (operator only):
+
+```bash
+grep BOOKMARKS_ /home/vladx/website/.env 2>/dev/null || true
+docker compose -f docker-compose.yml ps agent-api
 ```
 
-### Extension Configuration
-Verify the defaults are correct in `extensions/bookmarks-bro/extension-config.js`:
-```javascript
-const BB_EXTENSION = {
-  apiBaseDefault: 'https://swoop.autoro.tech',
-  supabaseAuthPathDefault: '/bb-supabase',
-  webAppPath: '/bookmarks-bro',
-  workspaceIdFallback: '1',
-  build: '0.1.1-testing'
-};
+---
+
+## 5. OAuth — Chrome extension
+
+See **`extensions/bookmarks-bro/SUPABASE_OAUTH_SETUP.md`** (RU checklist).
+
+**Redirect URL** (required in BB Supabase → Authentication → URL Configuration):
+
+```text
+chrome-extension://<EXTENSION_ID>/oauth-callback.html
 ```
-These can also be edited directly in the extension's **Settings** screen.
+
+Get `EXTENSION_ID` from `chrome://extensions` (Developer mode). ID changes when reloading unpacked extension — update Supabase when it changes.
+
+**Web app redirects** (if using email magic link / OAuth in browser):
+
+```text
+https://swoop.autoro.tech/bookmarks-bro
+https://swoop.autoro.tech/bookmarks-bro/*
+```
+
+---
+
+## 6. Deploy / connect agent-api to BB stack
+
+From website root on VPS:
+
+```bash
+docker compose \
+  -f docker-compose.yml \
+  -f ops/bookmarks-bro-supabase/docker-compose.agent-api.bookmarks.override.yml \
+  up -d --build agent-api
+```
+
+Bootstrap BB stack: `ops/bookmarks-bro-supabase/bootstrap.sh`  
+Recovery: `ops/bookmarks-bro-supabase/recover_bb_stack.sh`  
+SQL: `ops/bookmarks-bro-supabase/sql/001_bookmarks_bro_isolation.sql`, `002_telegram_assistant.sql`  
+App schema: `migrate_bookmarks_bro_mvp.sql`
+
+---
+
+## 7. Local development
+
+```bash
+npm install
+npm run dev                    # SPA + proxy /api/v1 → agent-api
+cd agent-api && pip install -r requirements.txt
+uvicorn main:app --host 0.0.0.0 --port 8900
+
+npm run build                  # production bundle
+npm run bookmarks-bro:smoke    # needs live API + env
+npm run bookmarks-bro:api-test
+```
+
+Extension: Chrome → Load unpacked → `extensions/bookmarks-bro/` (manifest version **integers only**, e.g. `0.3.1`).
+
+---
+
+## 8. Troubleshooting (B1 / B2)
+
+| Symptom | Check |
+|---------|--------|
+| OAuth popup closes, no session | Redirect URL in BB Supabase matches `chrome-extension://…/oauth-callback.html` |
+| 401 on API | User logged into BB (not Swoop); `Authorization: Bearer <jwt>` present |
+| Extension "Test Connection" fails | API Base + Auth Path; agent-api up; CORS/nginx `/api/v1` |
+| Wrong user's data | RLS + `workspace_id` — see `ADMIN-MULTIUSER.md` |
+| Google login error | Google Console redirect = `https://swoop.autoro.tech/bb-supabase/auth/v1/callback` |
+
+---
+
+## 9. Phase 1 vs Phase 2
+
+**Phase 1 (now):** document and fix OAuth/email; workspace via `workspaces/ensure`; no JWT middleware hardening.  
+**Phase 2 (later):** JWT-scoped workspaces, `workspace_members`, RLS hardening — see `ANTIGRAVITY-KEEPT-BRIEF.md` §2.5.
+
+**Re-enrich existing bookmarks with new taxonomy:** Phase 1.5 — normalization on write-path only in Phase 1.
+
+---
+
+## 10. Related docs
+
+| Doc | Purpose |
+|-----|---------|
+| `ANTIGRAVITY-HANDOFF.md` | Full Antigravity session context |
+| `ANTIGRAVITY-KEEPT-BRIEF.md` | Phase 1 task checklist |
+| `ANTIGRAVITY-SWOOP-KEEPT.md` | Swoop × Keept architecture |
+| `ADMIN-MULTIUSER.md` | Workspaces, Telegram |
+| `TESTING.md` | Smoke tests, extension |
+| `ops/bookmarks-bro-supabase/README.md` | BB stack ops (RU) |
+
+---
+
+## 11. Antigravity bootstrap (clone + tools)
+
+**Primary mirror repo** (Antigravity should clone this):
+
+```bash
+git clone -b bookmarks-bro https://github.com/autorotech-tech/AuthRAG.git
+cd AuthRAG
+bash scripts/link-antigravity-skills.sh    # from synced website scripts
+bash scripts/setup-understand-anything.sh  # code map skills
+```
+
+**Read first:** `docs/bookmarks-bro/ANTIGRAVITY-HANDOFF.md` → paste entire file into Antigravity chat.
+
+| Need | Doc / command |
+|------|----------------|
+| Architecture Swoop × Keept | `ANTIGRAVITY-SWOOP-KEEPT.md` |
+| Phase 1 tasks | `ANTIGRAVITY-KEEPT-BRIEF.md` |
+| Auth & staging URLs (this file) | `AUTH-SETUP.md` |
+| Code map | `/understand src/bookmarksBro agent-api extensions/bookmarks-bro --language en` |
+| Local build | `npm install && npm run dev` (requires synced `package.json`, `src/`, Vite configs) |
+| Sync from Cursor | `npm run keept:sync-authrag:apply` in **website** repo |
+
+**Secrets:** never in git. Operator provides BB anon key via secure channel or VPS:
+
+```bash
+ssh vladx@46.250.228.229
+grep BOOKMARKS_ ~/website/.env
+# or BB stack dir: /home/vladx/supabase-bookmarks-bro/.env
+```
+
+Copy into local `.env` (gitignored) using placeholders from §3.
