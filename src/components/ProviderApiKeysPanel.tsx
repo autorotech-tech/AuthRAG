@@ -45,6 +45,7 @@ export type ProviderKeysState = {
   gemini_keys: string[]
   groq_keys: string[]
   glm_keys: string[]
+  glm_default_model: string
   openai_keys: string[]
   openrouter_keys: string[]
   openrouter_default_model: string
@@ -114,7 +115,10 @@ export const PROVIDER_KEY_CONFIGS: ProviderKeyConfig[] = [
     healthKey: 'glm_keys',
     newKeyPlaceholder: 'Новый ключ GLM',
     catalogKey: 'glm',
-    modelHint: 'Пример модели: glm-5.1 — в routing (provider: glm) или env.',
+    modelField: 'glm_default_model',
+    modelLabel: 'GLM — модель по умолчанию',
+    modelPlaceholder: 'glm-4.7',
+    modelHint: 'Используется при routing provider: glm и в tier_models. Fallback: open.bigmodel.cn.',
   },
   {
     id: 'openai_keys',
@@ -374,18 +378,39 @@ export function ProviderApiKeysPanel({
   const isOpenRouterPicker =
     config.catalogKey === 'openrouter' || config.catalogKey === 'openrouter_qwen'
 
-  const openrouterPickerOptions = useMemo(() => {
-    if (!isOpenRouterPicker || !config.modelField) return []
+  const isCatalogPicker = isOpenRouterPicker || config.catalogKey === 'glm'
+
+  const catalogPickerOptions = useMemo(() => {
+    if (!isCatalogPicker || !config.modelField) return []
     const current = String(settings[config.modelField] ?? '')
-    const fromMeta = openrouterMeta.map((m) => m.id).filter(Boolean)
-    if (fromMeta.length) {
+    if (isOpenRouterPicker) {
+      const fromMeta = openrouterMeta.map((m) => m.id).filter(Boolean)
+      if (fromMeta.length) {
+        const seen = new Set<string>()
+        const out: string[] = []
+        if (current) {
+          seen.add(current)
+          out.push(current)
+        }
+        for (const id of fromMeta) {
+          if (!seen.has(id)) {
+            seen.add(id)
+            out.push(id)
+          }
+        }
+        return out
+      }
+      return current ? [current] : []
+    }
+    const fromCatalog = config.catalogKey ? modelCatalogs[config.catalogKey] || [] : []
+    if (fromCatalog.length) {
       const seen = new Set<string>()
       const out: string[] = []
       if (current) {
         seen.add(current)
         out.push(current)
       }
-      for (const id of fromMeta) {
+      for (const id of fromCatalog) {
         if (!seen.has(id)) {
           seen.add(id)
           out.push(id)
@@ -394,7 +419,7 @@ export function ProviderApiKeysPanel({
       return out
     }
     return current ? [current] : []
-  }, [config.modelField, isOpenRouterPicker, openrouterMeta, settings])
+  }, [config.catalogKey, config.modelField, isCatalogPicker, isOpenRouterPicker, modelCatalogs, openrouterMeta, settings])
 
   const setKeys = (nextKeys: string[]) => {
     onSettingsChange({ [config.keysField]: nextKeys } as Partial<ProviderKeysState>)
@@ -515,18 +540,22 @@ export function ProviderApiKeysPanel({
                   ) : null}
                 </div>
                 {config.modelHint && <p className="text-[10px] text-gray-400">{config.modelHint}</p>}
-                {isOpenRouterPicker ? (
+                {isCatalogPicker ? (
                   <ModelSearchCombobox
                     value={String(settings[config.modelField] ?? '')}
                     onChange={(next) =>
                       onSettingsChange({ [config.modelField!]: next } as Partial<ProviderKeysState>)
                     }
-                    options={openrouterPickerOptions}
-                    metaById={openrouterMetaById}
-                    placeholder="Поиск OpenRouter модели…"
-                    loading={openrouterCatalogLoading}
-                    loadError={openrouterCatalogError}
-                    emptyLabel="Бесплатные и платные модели из openrouter.ai"
+                    options={catalogPickerOptions}
+                    metaById={isOpenRouterPicker ? openrouterMetaById : {}}
+                    placeholder={isOpenRouterPicker ? 'Поиск OpenRouter модели…' : 'Поиск GLM модели…'}
+                    loading={isOpenRouterPicker ? openrouterCatalogLoading : false}
+                    loadError={isOpenRouterPicker ? openrouterCatalogError : null}
+                    emptyLabel={
+                      isOpenRouterPicker
+                        ? 'Бесплатные и платные модели из openrouter.ai'
+                        : 'Модели из open.bigmodel.cn (проверьте ключ GLM)'
+                    }
                   />
                 ) : modelOptions.length > 0 ? (
                   <select
@@ -561,6 +590,12 @@ export function ProviderApiKeysPanel({
                       : openrouterCatalogLoading
                         ? 'Загружаем актуальный список с openrouter.ai…'
                         : 'Нажмите «Обновить каталог OpenRouter» или сохраните Agent API key и перезагрузите страницу.'}
+                  </p>
+                ) : config.catalogKey === 'glm' ? (
+                  <p className="text-[10px] text-gray-400">
+                    {(modelCatalogs.glm || []).length > 0
+                      ? `Каталог GLM: ${modelCatalogs.glm?.length} моделей с open.bigmodel.cn.`
+                      : 'Добавьте ключ GLM и нажмите «Проверить ключи» внизу страницы.'}
                   </p>
                 ) : (
                   modelOptions.length > 0 && (

@@ -8,6 +8,7 @@ Product: **Keep It For Me** (Keept) · Domain: **keept.me** · Code: `bookmarks-
 2. **[AUTH-SETUP.md](./AUTH-SETUP.md)** — staging URLs, env vars, OAuth, where operators get secrets
 3. **[ANTIGRAVITY-KEEPT-BRIEF.md](./ANTIGRAVITY-KEEPT-BRIEF.md)** — Phase 1 checklist
 4. **[ANTIGRAVITY-SWOOP-KEEPT.md](./ANTIGRAVITY-SWOOP-KEEPT.md)** — Swoop control plane × Keept data plane
+5. **[ANTIGRAVITY-SWOOP-API.md](./ANTIGRAVITY-SWOOP-API.md)** — agent-api endpoints для Antigravity (auth, capture, LLM)
 
 ## Architecture & ops
 

@@ -2259,6 +2259,9 @@ def ensure_service_settings_schema() -> None:
                 "alter table public.service_settings add column if not exists api_key_pool_meta jsonb not null default '{}'::jsonb"
             )
             cur.execute(
+                "alter table public.service_settings add column if not exists glm_default_model text not null default 'glm-4.7'"
+            )
+            cur.execute(
                 "alter table public.service_settings add column if not exists expireddomains_username text not null default ''"
             )
             cur.execute(
@@ -3152,33 +3155,34 @@ _LLM_TIER_NAMES: Tuple[str, ...] = ("code", "reasoning", "fast", "general", "vis
 
 def _default_agent_llm_routing() -> Dict[str, Any]:
     """Цепочки по умолчанию, если в БД пусто или неполная конфигурация."""
+    glm_step = {"provider": "glm", "model": ""}
     or_step = {"provider": "openrouter", "model": ""}
     return {
         "tiers": {
             "code": [
+                glm_step,
                 or_step,
                 {"provider": "groq", "model": ""},
-                {"provider": "glm", "model": ""},
                 {"provider": "openai", "model": ""},
                 {"provider": "gemini", "model": ""},
             ],
             "reasoning": [
+                glm_step,
                 or_step,
                 {"provider": "openai", "model": ""},
                 {"provider": "groq", "model": ""},
-                {"provider": "glm", "model": ""},
                 {"provider": "gemini", "model": ""},
             ],
             "fast": [
-                {"provider": "groq", "model": ""},
-                {"provider": "glm", "model": ""},
+                glm_step,
                 or_step,
+                {"provider": "groq", "model": ""},
                 {"provider": "openai", "model": ""},
                 {"provider": "gemini", "model": ""},
             ],
             "general": [
+                glm_step,
                 or_step,
-                {"provider": "glm", "model": ""},
                 {"provider": "groq", "model": ""},
                 {"provider": "openai", "model": ""},
                 {"provider": "gemini", "model": ""},
@@ -3186,10 +3190,26 @@ def _default_agent_llm_routing() -> Dict[str, Any]:
             "vision": [
                 {"provider": "glm", "model": ""},
                 {"provider": "gemini", "model": ""},
-                {"provider": "openrouter", "model": ""},
+                or_step,
                 {"provider": "openai", "model": ""},
                 {"provider": "groq", "model": ""},
             ],
+        },
+        "tier_models": {
+            "glm": {
+                "fast": "glm-4-flash",
+                "general": "glm-4.7",
+                "code": "glm-4.7",
+                "reasoning": "glm-5",
+                "vision": "glm-4v-flash",
+            },
+            "openrouter": {
+                "fast": "openai/gpt-4o-mini",
+                "general": "anthropic/claude-3.7-sonnet",
+                "code": "anthropic/claude-3.7-sonnet",
+                "reasoning": "anthropic/claude-3.7-sonnet",
+                "vision": "google/gemini-2.5-pro",
+            },
         },
         "fallback": [
             {"provider": "api_key_groups", "model": ""},
@@ -3307,7 +3327,8 @@ def load_swoop_llm_key_settings() -> Dict[str, Any]:
         "groq_keys": [],
         "gemini_keys": [],
         "gemini_api_key": "",
-        "openrouter_default_model": "google/gemini-2.0-flash-001",
+        "openrouter_default_model": "anthropic/claude-3.7-sonnet",
+        "glm_default_model": "glm-4.7",
         "openrouter_qwen_model": "google/gemma-2-9b-it:free",
         "lmarena_keys": [],
         "lmarena_base_url": "",
@@ -3353,6 +3374,9 @@ def load_swoop_llm_key_settings() -> Dict[str, Any]:
     mod = row.get("openrouter_default_model")
     if mod and str(mod).strip():
         cfg["openrouter_default_model"] = str(mod).strip()
+    glm_mod = row.get("glm_default_model")
+    if glm_mod and str(glm_mod).strip():
+        cfg["glm_default_model"] = str(glm_mod).strip()
     qwen_mod = row.get("openrouter_qwen_model")
     if qwen_mod and str(qwen_mod).strip():
         cfg["openrouter_qwen_model"] = str(qwen_mod).strip()

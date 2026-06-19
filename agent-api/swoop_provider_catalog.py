@@ -559,6 +559,8 @@ def _static_fallback(provider: str, settings: Dict[str, Any]) -> str:
         return str(settings.get("openrouter_default_model") or "").strip() or "openai/gpt-4o-mini"
     if prov == "openrouter-qwen":
         return str(settings.get("openrouter_qwen_model") or "").strip() or "qwen/qwen3.6-plus-preview:free"
+    if prov == "glm":
+        return str(settings.get("glm_default_model") or "").strip() or os.environ.get("BOOKMARKS_GLM_CHAT_MODEL", "glm-4.7").strip() or "glm-4.7"
     if prov == "lmarena":
         return str(settings.get("lmarena_default_model") or "").strip()
     env_key, default = _PROVIDER_ENV_FALLBACK.get(prov, ("", ""))

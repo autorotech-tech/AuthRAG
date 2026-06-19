@@ -27,6 +27,7 @@ interface ServiceSettings {
   gemini_keys: string[]
   groq_keys: string[]
   glm_keys: string[]
+  glm_default_model: string
   openai_keys: string[]
   openrouter_keys: string[]
   openrouter_default_model: string
@@ -112,37 +113,60 @@ function parseApiKeyGroups(raw: unknown): ApiKeyGroup[] {
   return out
 }
 
-/** Дефолт совпадает с agent-api `_default_agent_llm_routing` (пустой model = env/дефолт провайдера). */
+/** Дефолт: GLM Coding Plan primary → OpenRouter fallback (совпадает с agent-api). */
 const DEFAULT_AGENT_LLM_ROUTING = {
   tiers: {
     code: [
+      { provider: 'glm', model: '' },
       { provider: 'openrouter', model: '' },
       { provider: 'groq', model: '' },
-      { provider: 'glm', model: '' },
       { provider: 'openai', model: '' },
       { provider: 'gemini', model: '' },
     ],
     reasoning: [
+      { provider: 'glm', model: '' },
       { provider: 'openrouter', model: '' },
       { provider: 'openai', model: '' },
       { provider: 'groq', model: '' },
-      { provider: 'glm', model: '' },
       { provider: 'gemini', model: '' },
     ],
     fast: [
-      { provider: 'groq', model: '' },
       { provider: 'glm', model: '' },
       { provider: 'openrouter', model: '' },
+      { provider: 'groq', model: '' },
       { provider: 'openai', model: '' },
       { provider: 'gemini', model: '' },
     ],
     general: [
-      { provider: 'openrouter', model: '' },
       { provider: 'glm', model: '' },
+      { provider: 'openrouter', model: '' },
       { provider: 'groq', model: '' },
       { provider: 'openai', model: '' },
       { provider: 'gemini', model: '' },
     ],
+    vision: [
+      { provider: 'glm', model: '' },
+      { provider: 'gemini', model: '' },
+      { provider: 'openrouter', model: '' },
+      { provider: 'openai', model: '' },
+      { provider: 'groq', model: '' },
+    ],
+  },
+  tier_models: {
+    glm: {
+      fast: 'glm-4-flash',
+      general: 'glm-4.7',
+      code: 'glm-4.7',
+      reasoning: 'glm-5',
+      vision: 'glm-4v-flash',
+    },
+    openrouter: {
+      fast: 'openai/gpt-4o-mini',
+      general: 'anthropic/claude-3.7-sonnet',
+      code: 'anthropic/claude-3.7-sonnet',
+      reasoning: 'anthropic/claude-3.7-sonnet',
+      vision: 'google/gemini-2.5-pro',
+    },
   },
   fallback: [
     { provider: 'api_key_groups', model: '' },
@@ -184,6 +208,7 @@ export function AdminSettings() {
     gemini_keys: [],
     groq_keys: [],
     glm_keys: [],
+    glm_default_model: 'glm-4.7',
     openai_keys: [],
     openrouter_keys: [],
     openrouter_default_model: 'google/gemini-2.0-flash-001',
@@ -218,6 +243,12 @@ export function AdminSettings() {
   const [llmRoutingDraft, setLlmRoutingDraft] = useState(() => JSON.stringify(DEFAULT_AGENT_LLM_ROUTING, null, 2))
   const openrouterMetaById = useMemo(() => buildOpenRouterMetaMap(openrouterMeta), [openrouterMeta])
   const openrouterModelIds = useMemo(() => openrouterMeta.map((m) => m.id), [openrouterMeta])
+  const glmModelIds = useMemo(() => {
+    const fromCatalog = modelCatalogs.glm || []
+    const current = settings.glm_default_model.trim()
+    if (current && !fromCatalog.includes(current)) return [current, ...fromCatalog]
+    return fromCatalog
+  }, [modelCatalogs.glm, settings.glm_default_model])
 
   const routingObj = useMemo(() => parseLlmRoutingDraft(llmRoutingDraft), [llmRoutingDraft])
   const [telegramHookBusy, setTelegramHookBusy] = useState(false)
@@ -403,9 +434,10 @@ export function AdminSettings() {
           gemini_keys: (data.gemini_keys || []).filter((k: string) => k && k.trim()),
           groq_keys: (data.groq_keys || []).filter((k: string) => k && k.trim()),
           glm_keys: (data.glm_keys || []).filter((k: string) => k && k.trim()),
+          glm_default_model: (data.glm_default_model || 'glm-4.7').trim(),
           openai_keys: (data.openai_keys || []).filter((k: string) => k && k.trim()),
           openrouter_keys: (data.openrouter_keys || []).filter((k: string) => k && k.trim()),
-          openrouter_default_model: (data.openrouter_default_model || 'google/gemini-2.0-flash-001').trim(),
+          openrouter_default_model: (data.openrouter_default_model || 'anthropic/claude-3.7-sonnet').trim(),
           openrouter_qwen_keys: (data.openrouter_qwen_keys || []).filter((k: string) => k && k.trim()),
           openrouter_qwen_model: (data.openrouter_qwen_model || 'qwen/qwen3.6-plus-preview:free').trim(),
           lmarena_keys: (data.lmarena_keys || []).filter((k: string) => k && k.trim()),
@@ -680,7 +712,51 @@ export function AdminSettings() {
           </div>
 
           <div className="space-y-2">
-            <p className="text-xs font-medium text-gray-700">OpenRouter — модель по тиру</p>
+            <p className="text-xs font-medium text-gray-700">GLM (Coding Plan) — модель по тиру</p>
+            <p className="text-[10px] text-gray-500">
+              Primary провайдер для enrich/Keept. Каталог подгружается при проверке ключей GLM.
+            </p>
+            <div className="grid grid-cols-1 gap-3">
+              {LLM_TIER_NAMES.map((tier) => {
+                const tierModels = (routingObj.tier_models || {}) as Record<string, Record<string, string>>
+                const glmTier = tierModels.glm || {}
+                const tierValue = glmTier[tier] || ''
+                const tierOptions =
+                  tierValue && !glmModelIds.includes(tierValue)
+                    ? [tierValue, ...glmModelIds]
+                    : glmModelIds
+                return (
+                  <div key={`glm-${tier}`} className="space-y-1">
+                    <label className="text-[10px] font-semibold text-gray-600 uppercase tracking-wide">{tier}</label>
+                    <ModelSearchCombobox
+                      value={tierValue}
+                      onChange={(next) => {
+                        const base = parseLlmRoutingDraft(llmRoutingDraft)
+                        const allTierModels = {
+                          ...(base.tier_models as Record<string, Record<string, string>> | undefined),
+                        }
+                        const glmMap = { ...(allTierModels.glm || {}) }
+                        if (next) glmMap[tier] = next
+                        else delete glmMap[tier]
+                        if (Object.keys(glmMap).length) allTierModels.glm = glmMap
+                        else delete allTierModels.glm
+                        const merged = parseLlmRoutingDraft(llmRoutingDraft)
+                        if (Object.keys(allTierModels).length) merged.tier_models = allTierModels
+                        else delete merged.tier_models
+                        setLlmRoutingDraft(JSON.stringify(merged, null, 2))
+                      }}
+                      options={tierOptions}
+                      placeholder={`GLM для tier ${tier}…`}
+                      emptyLabel="Добавьте ключ GLM и нажмите «Проверить ключи»"
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <p className="text-xs font-medium text-gray-700">OpenRouter — модель по тиру (fallback)</p>
             <div className="grid grid-cols-1 gap-3">
               {LLM_TIER_NAMES.map((tier) => {
                 const tierModels = (routingObj.tier_models || {}) as Record<string, Record<string, string>>
@@ -809,6 +885,7 @@ export function AdminSettings() {
                 gemini_keys: settings.gemini_keys,
                 groq_keys: settings.groq_keys,
                 glm_keys: settings.glm_keys,
+                glm_default_model: settings.glm_default_model.trim(),
                 openai_keys: settings.openai_keys,
                 openrouter_keys: settings.openrouter_keys,
                 openrouter_default_model: settings.openrouter_default_model.trim(),
