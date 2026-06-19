@@ -2410,18 +2410,39 @@ def normalize_tags(tags: list) -> list:
             normalized.append(norm)
     return normalized
 
+
+def normalize_category(category: str) -> str:
+    if not category:
+        return "general"
+    schema = get_tags_schema()
+    aliases = schema.get("tag_aliases", {})
+    allowed = set(schema.get("categories", []))
+    norm = normalize_single_tag(str(category), aliases)
+    if norm in allowed:
+        return norm
+    return "general"
+
+
 def infer_category(url: str, title: str, content_text: str) -> str:
     source = f"{url} {title} {content_text}".lower()
+    schema = get_tags_schema()
     rules = {
-        "ai-ml": ["ai", "llm", "machine learning", "neural", "openai", "anthropic"],
+        "ai-ml": ["ai", "llm", "machine learning", "neural", "openai", "anthropic", "gemini"],
         "dev-tools": ["github", "gitlab", "docs", "api", "sdk", "typescript", "python", "docker"],
         "marketing": ["seo", "ads", "marketing", "growth", "lead", "funnel"],
         "business": ["pricing", "saas", "revenue", "sales", "finance", "startup"],
         "design": ["design", "ui", "ux", "figma", "typography"],
+        "prompt": ["prompt", "system prompt", "few-shot"],
+        "article": ["article", "blog", "post", "essay"],
+        "note": ["note", "memo", "journal"],
+        "link": ["bookmark", "link", "url"],
+        "task": ["task", "todo", "reminder"],
     }
     for category, words in rules.items():
+        if category not in schema.get("categories", []):
+            continue
         if any(w in source for w in words):
-            return category
+            return normalize_category(category)
     return "general"
 
 

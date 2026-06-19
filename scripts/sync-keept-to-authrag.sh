@@ -93,6 +93,8 @@ rsync "${RSYNC_FLAGS[@]}" \
   --include='src/**' \
   --include='agent-api/' \
   --include='agent-api/**' \
+  --include='schemas/' \
+  --include='schemas/**' \
   --include='extensions/' \
   --include='extensions/bookmarks-bro/' \
   --include='extensions/bookmarks-bro/**' \
