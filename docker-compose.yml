@@ -7,6 +7,9 @@ services:
       args:
         VITE_SUPABASE_URL: ${VITE_SUPABASE_URL}
         VITE_SUPABASE_ANON_KEY: ${VITE_SUPABASE_ANON_KEY}
+        VITE_PQUOC_SUPABASE_URL: ${VITE_PQUOC_SUPABASE_URL}
+        VITE_PQUOC_SUPABASE_SERVICE_KEY: ${VITE_PQUOC_SUPABASE_SERVICE_KEY}
+        VITE_PQUOC_DEPLOY_WEBHOOK: ${VITE_PQUOC_DEPLOY_WEBHOOK}
     container_name: autoro-frontend
     restart: always
     environment:
