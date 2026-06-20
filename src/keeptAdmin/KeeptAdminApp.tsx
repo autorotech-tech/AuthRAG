@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react'
+import { useEffect } from 'react'
 import { Routes, Route, NavLink, useNavigate } from 'react-router-dom'
 import { ModerationPanel } from './ModerationPanel'
 import { SettingsPanel } from './SettingsPanel'
