@@ -112,3 +112,30 @@ export async function fetchProviderCatalog(): Promise<ProviderCatalogModel[]> {
   }
   return Array.isArray(data) ? data : []
 }
+
+export interface KeeptSettings {
+  tts_engine: string;
+}
+
+export async function fetchKeeptSettings(): Promise<KeeptSettings> {
+  const res = await fetch(bookmarksAgentApiUrl('/api/v1/keept/settings'), {
+    headers: bookmarksHeaders(),
+  })
+  if (!res.ok) {
+    throw new Error(`Failed to fetch Keept settings: ${res.status}`)
+  }
+  return res.json()
+}
+
+export async function updateKeeptSettings(settings: KeeptSettings): Promise<KeeptSettings> {
+  const res = await fetch(bookmarksAgentApiUrl('/api/v1/keept/settings'), {
+    method: 'POST',
+    headers: bookmarksHeaders({ 'Content-Type': 'application/json' }),
+    body: JSON.stringify(settings),
+  })
+  if (!res.ok) {
+    throw new Error(`Failed to update Keept settings: ${res.status}`)
+  }
+  return res.json()
+}
+

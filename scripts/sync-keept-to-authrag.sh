@@ -112,6 +112,7 @@ rsync "${RSYNC_FLAGS[@]}" \
   --include='scripts/bookmarks-bro-smoke.mjs' \
   --include='scripts/bookmarks-bro-api-test.mjs' \
   --include='scripts/keept-adk.sh' \
+  --include='scripts/deploy-keept-staging.sh' \
   --include='scripts/sync-keept-to-authrag.sh' \
   --include='scripts/setup-understand-anything.sh' \
   --include='scripts/link-antigravity-skills.sh' \
@@ -122,6 +123,19 @@ rsync "${RSYNC_FLAGS[@]}" \
   --include='.github/workflows/keept-staging-smoke.yml' \
   --exclude='*' \
   "$WEBSITE_ROOT/" "$AUTHRAG_ROOT/"
+
+# Sync Babylon Fish (AI Translator Backend) into AuthRAG repo for Antigravity access
+if [[ -d "$WEBSITE_ROOT/../ai-translator-backend" ]]; then
+  echo "Syncing Babylon Fish (ai-translator-backend)..."
+  mkdir -p "$AUTHRAG_ROOT/ai-translator-backend"
+  rsync "${RSYNC_FLAGS[@]}" \
+    --exclude='.venv' \
+    --exclude='__pycache__' \
+    --exclude='*.pyc' \
+    --exclude='.env' \
+    --exclude='livekit_test_session.json' \
+    "$WEBSITE_ROOT/../ai-translator-backend/" "$AUTHRAG_ROOT/ai-translator-backend/"
+fi
 
 # AuthRAG root README (Antigravity entry point)
 if [[ -f "$WEBSITE_ROOT/docs/bookmarks-bro/AUTHRAG-README.md" ]]; then

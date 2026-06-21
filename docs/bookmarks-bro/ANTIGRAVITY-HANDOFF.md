@@ -9,7 +9,7 @@
 
 ## 0. One-minute summary
 
-You are building **Keep It For Me** (brand **Keept**, domain **`keept.me`**). Internal codename **BrowserBro**; legacy paths **`bookmarks-bro`**, **`bookmarksBro`**, **`BOOKMARKS_*`** — **do not rename in Phase 1**.
+Вы работаете над проектом высокоскоростного синхронного перевода звонков **Babylon Fish** (Вавилонская Рыбка) и платформой **Keep It For Me** (бренд **Keept**, домен **`keept.me`**). Internal codename **BrowserBro**; legacy paths **`bookmarks-bro`**, **`bookmarksBro`**, **`BOOKMARKS_*`** — **do not rename in Phase 1**.
 
 | | Cursor (human + Composer) | You (Antigravity) |
 |---|---------------------------|-------------------|
@@ -22,17 +22,17 @@ You are building **Keep It For Me** (brand **Keept**, domain **`keept.me`**). In
 
 ---
 
-## 1. Product identity
+## 1. Product identity & Babylon Fish
 
 | Layer | Name | Change in Phase 1? |
 |-------|------|-------------------|
-| Public product | **Keep It For Me** | Yes — user-visible strings |
+| Public product | **Keep It For Me** (Keept) / **Babylon Fish** | Yes — user-visible strings |
 | Short / domain | **Keept** / **keept.me** | Yes — marketing copy |
-| Internal codename | BrowserBro | No |
-| Code paths | `bookmarks-bro`, `src/bookmarksBro`, `BOOKMARKS_*` | **No mass rename** |
+| Translation Agent | **Babylon Fish** (Вавилонская Рыбка) | New Real-time translation tool |
+| Code paths | `bookmarks-bro`, `src/bookmarksBro`, `BOOKMARKS_*`, `ai-translator-backend/` | **No mass rename** |
 | API prefix | `/api/v1/bookmarks/*`, `/api/v1/keept/*` | No |
 
-**Tagline:** *Keep what matters — search it later with AI.*
+**Tagline:** *Keep what matters — search it later with AI. Speak freely — translate instantly with Babylon Fish.*
 
 ---
 
@@ -215,8 +215,19 @@ cd website && bash scripts/link-antigravity-skills.sh   # Cursor skills → ~/.g
 | Multi-phase | `antigravity-workflows`, `supergoal` |
 | Debug API | `systematic-debugging` |
 | E2E extension | `playwright-skill` |
+| Babylon Fish Translation | `voice-ai-development`, `voice-agents`, `n8n-mcp-tools-expert` |
 
 Read `AGENTS.md` and `GEMINI.md` in website repo.
+
+---
+
+## 8.4 Babylon Fish & Call Integrations Reference
+
+В папке `ai-translator-backend/` развернута кодовая база синхронного переводчика:
+* `agent_adk_translator.py` — неблокирующий перевод разговоров (RU ↔ EN) на базе LiveKit.
+* `call_integration.py` — скрипт подключения популярных приложений звонков и VoIP (SIP, RTMP, Virtual Audio Cables).
+* Подробные инструкции, руководства по тестированию и архитектура описаны в:
+  `docs/bookmarks-bro/BABYLON-FISH-GUIDE.md`
 
 ---
 

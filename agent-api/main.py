@@ -996,6 +996,10 @@ class KeeptModerationResolvePayload(BaseModel):
     decision: str = Field(..., min_length=4, max_length=16, description="approve | reject")
 
 
+class KeeptSettingsUpdatePayload(BaseModel):
+    tts_engine: str = Field(..., min_length=4, max_length=32, description="google | elevenlabs")
+
+
 class KnowledgeExtractCapturePayload(BaseModel):
     workspaceId: str = Field(..., min_length=1, max_length=64)
     rawText: str = Field(..., min_length=1, max_length=200000)
@@ -2281,6 +2285,9 @@ def ensure_service_settings_schema() -> None:
             )
             cur.execute(
                 "alter table public.service_settings add column if not exists telegram_gateway_routing_enabled boolean not null default false"
+            )
+            cur.execute(
+                "alter table public.service_settings add column if not exists adk_translator_tts_engine text not null default 'google'"
             )
             cur.execute(
                 "alter table public.service_settings add column if not exists telegram_n8n_assistant_webhook_url text not null default ''"
@@ -10218,6 +10225,59 @@ async def keept_moderation_resolve(
             "sync": obsidian_sync,
         },
     }
+
+
+@app.get("/api/v1/keept/settings")
+async def keept_get_settings(
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    verify_bookmarks_access(request, x_api_key, authorization)
+    conn = pg_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("select adk_translator_tts_engine from public.service_settings where id = 1 limit 1")
+            row = cur.fetchone()
+            tts_engine = row[0] if row else "google"
+            return {"ok": True, "tts_engine": tts_engine}
+    except Exception as exc:
+        logger.error("Failed to fetch Keept Settings: %s", exc)
+        return {"ok": True, "tts_engine": "google"}
+    finally:
+        conn.close()
+
+
+@app.post("/api/v1/keept/settings")
+async def keept_update_settings(
+    payload: KeeptSettingsUpdatePayload,
+    request: Request,
+    x_api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    authorization: Optional[str] = Header(None, alias="Authorization"),
+):
+    verify_bookmarks_access(request, x_api_key, authorization)
+    tts_engine = payload.tts_engine.strip().lower()
+    if tts_engine not in ("google", "elevenlabs"):
+        raise HTTPException(status_code=400, detail="tts_engine must be 'google' or 'elevenlabs'")
+    conn = pg_connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                update public.service_settings
+                set adk_translator_tts_engine = %s
+                where id = 1
+                """,
+                (tts_engine,),
+            )
+            conn.commit()
+            return {"ok": True, "tts_engine": tts_engine}
+    except Exception as exc:
+        conn.rollback()
+        logger.error("Failed to update Keept Settings: %s", exc)
+        raise HTTPException(status_code=500, detail=f"Failed to update Keept Settings: {exc}")
+    finally:
+        conn.close()
 
 
 @app.post("/api/v1/knowledge/{knowledge_item_id}/re-enrich")
