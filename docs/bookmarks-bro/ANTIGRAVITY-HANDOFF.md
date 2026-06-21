@@ -1,337 +1,134 @@
-# Antigravity Handoff — Keep It For Me (`keept.me`)
+# Antigravity Handoff — Keep It For Me & Babylon Fish Integration
 
 > **Copy-paste this entire file into Antigravity as session context.**  
-> **Updated:** 2026-06-18  
+> **Updated:** 2026-06-21  
 > **Audience:** Google Antigravity autonomous agent  
 > **Human operator:** Vlad / Autoro — parallel dev with Cursor IDE
 
 ---
 
-## 0. One-minute summary
+## 1. Архитектурное Разделение Проектов
 
-Вы работаете над проектом высокоскоростного синхронного перевода звонков **Babylon Fish** (Вавилонская Рыбка) и платформой **Keep It For Me** (бренд **Keept**, домен **`keept.me`**). Internal codename **BrowserBro**; legacy paths **`bookmarks-bro`**, **`bookmarksBro`**, **`BOOKMARKS_*`** — **do not rename in Phase 1**.
-
-| | Cursor (human + Composer) | You (Antigravity) |
-|---|---------------------------|-------------------|
-| **Source of truth** | `github.com/autorotech-tech/website` branch `main` | Mirror: `github.com/autorotech-tech/AuthRAG` branch `bookmarks-bro` |
-| **Full monorepo** | Local disk + (eventually) GitHub push | AuthRAG slice only |
-| **Memory** | Obsidian MCP vault | Same vault — search `Keep It For Me`, `Bookmarks Bro` |
-| **Code map** | Understand Anything skills | Same — run `/understand` on Keept paths |
-
-**Rule:** Implement in **website** paths when available; sync to AuthRAG via `scripts/sync-keept-to-authrag.sh`. Batch sync after meaningful milestones (not every micro-edit).
-
----
-
-## 1. Product identity & Babylon Fish
-
-| Layer | Name | Change in Phase 1? |
-|-------|------|-------------------|
-| Public product | **Keep It For Me** (Keept) / **Babylon Fish** | Yes — user-visible strings |
-| Short / domain | **Keept** / **keept.me** | Yes — marketing copy |
-| Translation Agent | **Babylon Fish** (Вавилонская Рыбка) | New Real-time translation tool |
-| Code paths | `bookmarks-bro`, `src/bookmarksBro`, `BOOKMARKS_*`, `ai-translator-backend/` | **No mass rename** |
-| API prefix | `/api/v1/bookmarks/*`, `/api/v1/keept/*` | No |
-
-**Tagline:** *Keep what matters — search it later with AI. Speak freely — translate instantly with Babylon Fish.*
-
----
-
-## 2. Two products on one VPS
-
-| | **Swoop** (`swoop.autoro.tech`) | **Keept** (`keept.me` target) |
-|---|--------------------------------|-------------------------------|
-| Users | Autoro operators | End users (B2C) |
-| Auth | Main Supabase | **BB Supabase** at `/bb-supabase` |
-| UI | Admin, scrapling, blog ops | `/bookmarks-bro` + Chrome extension |
-| Role | Control plane (LLM keys, n8n, ops) | Data plane (KB, RAG, Telegram) |
-
-**Keept users never log into Swoop.**
-
-Staging app URL today: `https://swoop.autoro.tech/bookmarks-bro`  
-VPS: `46.250.228.229`, user `vladx`. Secrets on server only.
-
----
-
-## 3. Repository layout (website monorepo)
+В соответствии с новыми требованиями, **Keep It For Me (Keept)** и **Babylon Fish** представляют собой два **разных, изолированных проекта**, которые тесно интегрируются между собой через API-интерфейсы и единую базу данных Supabase:
 
 ```
-website/                              # SOURCE OF TRUTH (Cursor)
-├── agent-api/main.py                 # FastAPI — all Keept backend
-├── src/bookmarksBro/                 # React web app (route /bookmarks-bro)
-│   ├── BookmarksBroApp.tsx           # Main UI
-│   ├── services.ts                   # API client, search, sync, telegram
-│   ├── bookmarksBroBuild.ts          # Build label: 0.1.1-testing
-│   └── localVectorStore.ts           # KeeptLocalVault (IndexedDB)
-├── extensions/bookmarks-bro/         # Chrome MV3 extension (manifest 0.3.1)
-├── docs/bookmarks-bro/               # Product + Antigravity docs (READ FIRST)
-├── n8n/workflows/keept_telegram_assistant.json
-├── migrate_bookmarks_bro_mvp.sql
-├── ops/bookmarks-bro-supabase/       # Isolated BB Supabase stack
-└── scripts/
-    ├── sync-keept-to-authrag.sh      # website → AuthRAG
-    ├── setup-understand-anything.sh  # Code knowledge graph tool
-    ├── bookmarks-bro-smoke.mjs
-    └── bookmarks-bro-api-test.mjs
-
-AuthRAG/                              # YOUR MIRROR (branch bookmarks-bro)
-├── agents/keep-it-for-me → ../../keep-it-for-me   # ADK agent plane (symlink)
-└── (subset of paths above — synced via script)
+  [ Keep It For Me (Keept) ]                       [ Babylon Fish ]
+  (База знаний, закладки, контакты)               (Синхронный голосовой переводчик)
+             │                                               │
+             │ (Запрос контактов и контекста)                │ (Запуск перевода)
+             ▼                                               ▼
+     [ API / DB Supabase ] ◄──────────────────────── [ LiveKit Agent / ADK ]
+     - bookmarks_bro.contacts                        - Загрузка контекста контакта
+     - bookmarks_bro.bookmarks                       - Генерация подсказок на лету
 ```
 
-### Agent plane (ADK, separate from web UI)
+### 1.1 Keep It For Me (Keept) — `keept.me`
+Персональная база знаний, хранилище закладок, заметок и умных контактов:
+* **Информационный хаб**: Собирает веб-страницы, ссылки, файлы и структурирует их с помощью ИИ.
+* **База умных контактов (`bookmarks_bro.contacts`)**: Хранит профили людей, их контактную информацию, а главное — **контекст контакта** (биографию, интересы, резюме прошлых встреч, связанные теги).
+* **Интерфейс вызова**: Предоставляет кнопку «Позвонить» (Call with Babylon Fish) на карточке контакта, которая запускает сессию перевода.
 
-| Path | Role |
-|------|------|
-| `keep-it-for-me/` (repo sibling) | Keept RAG ADK — `agents-cli deploy`, security screen before LLM |
-| `AuthRAG/agents/keep-it-for-me` | Symlink to ADK project — see `agents/README.md` |
-| `ambient-expense-agent/` | Course agent — eval `make grade` |
-| `secure-agent-lab/` | **Separate workspace** — Assignment 4 only |
-
-Web slice (`src/bookmarksBro`, `agent-api`) talks to staging API. ADK runtime deploys in parallel.
-
-### GitHub reality check (2026-06-18)
-
-- `autorotech-tech/website` on GitHub `main` currently contains **docs only** (`docs/bookmarks-bro/*.md`).
-- **Full monorepo lives on operator's Mac** at `~/Desktop/n8n/autoro.tech/website` (mostly untracked in git until pushed).
-- **Do not assume** GitHub has `package.json` or `agent-api/` yet — clone from AuthRAG or wait for sync.
-- Operator will push full monorepo when ready; until then **AuthRAG + local website** are the code sources.
+### 1.2 Babylon Fish (Вавилонская Рыбка) — `ai-translator-backend/`
+Высокоскоростная инфраструктура синхронного перевода голосовых звонков в реальном времени:
+* **Медиа-сервер (LiveKit)**: Обеспечивает голосовую связь (WebRTC) с минимальной задержкой.
+* **Потоковый ADK-агент**: Реализует транскрипцию (Deepgram Nova-3), перевод (Gemini 2.5 Flash) и синтез речи (Google Journey / ElevenLabs Flash) в неблокирующем потоковом режиме.
+* **Контекстный движок подсказок (Hints Engine)**: Загружает контекст вызываемого контакта из базы знаний Keept и Swoop. В ходе разговора генерирует **подсказки/советы на экране в реальном времени** (например, напоминая обсудить тему из общих закладок или предупреждая о профессиональной специализации собеседника).
 
 ---
 
-## 4. Read order (mandatory)
+## 2. Модель Данных Контактов (`bookmarks_bro.contacts`)
 
-1. **This file** — `docs/bookmarks-bro/ANTIGRAVITY-HANDOFF.md`
-2. `docs/bookmarks-bro/ANTIGRAVITY-KEEPT-BRIEF.md` — Phase 1 scope, naming, checklist
-3. `docs/bookmarks-bro/ANTIGRAVITY-SWOOP-KEEPT.md` — Swoop tools, Telegram, phases
-4. `docs/bookmarks-bro/MATHEMATICAL-MODEL.md` — sets, FSM, UI snapshot merge
-5. `docs/bookmarks-bro/TESTING.md` — smoke + manual QA
-6. `docs/bookmarks-bro/ADMIN-MULTIUSER.md` — workspace vs owner_id
-7. AuthRAG: `docs/ANTIGRAVITY-INFRA-BRIEF.md`, `ROADMAP.md` (when present)
+Для хранения контактов в схеме `bookmarks_bro` СУБД Supabase используется следующая таблица:
 
----
+```sql
+create table if not exists bookmarks_bro.contacts (
+  id bigserial primary key,
+  owner_id uuid not null references auth.users(id) on delete cascade,
+  name text not null,
+  phone text,
+  email text,
+  company text,
+  job_title text,
+  context_summary text, -- AI-сгенерированное или ручное описание бэкграунда и интересов собеседника
+  tags jsonb default '[]'::jsonb, -- Связанные интересы/теги для фильтрации подсказок
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now()
+);
 
-## 5. Phase map and current status
-
-| Phase | Focus | Status (2026-06-18) |
-|-------|--------|---------------------|
-| **1** | Auth docs, taxonomy, EN UI, search filters | **In progress** |
-| **1.5** | Re-enrich legacy tags in DB | Not started |
-| **2** | Multi-user JWT + `workspace_members` | **Partial** — `verify_workspace_membership()` in API |
-| **3.0** | Telegram Tier A (platform bot) | **Partial** — API + n8n workflow exist |
-| **3.1** | User-owned bot tokens | Not started |
-| **4** | RAG quality / LLM routing | Ongoing via Swoop admin |
-| **5** | `keept.me` prod domain | Future |
-
-### Phase 1 open items (your priority)
-
-- [x] `docs/bookmarks-bro/AUTH-SETUP.md` (EN) — staging URLs, env templates, OAuth, VPS access paths
-- [x] `schemas/categories.json` + `normalize_category()` + `agent-api/tests/test_normalize_tags.py`
-- [x] User-visible brand **Keep It For Me** / **Keept** in web UI + extension HTML
-- [x] Search filters: category, tag (clickable pills), RAG semantic/keyword mode
-- [x] `AuthRAG/agents/keep-it-for-me` symlink + `agents/README.md`
-- [ ] Push full website monorepo to GitHub `main` (operator)
-
-### Already implemented (do not redo)
-
-- `POST /api/v1/bookmarks/bootstrap` — extension Bearer token
-- `POST /api/v1/bookmarks/workspaces/ensure` — workspace id resolution
-- `GET/PUT /api/v1/bookmarks/workspace-ui-state` — ideas, reminders, KB snapshot
-- `POST /api/v1/keept/telegram/link-code|complete-link|status|unlink|bot-token`
-- `verify_workspace_membership()` on many endpoints
-- Web UI: Telegram linking, Keept Grounded Brain, `runKeeptAgent`
-- Extension: `extension-config.js`, Resolve workspace, Knowledge App button, build `0.1.1-testing`
-- n8n: `keept_telegram_assistant.json`
+create index if not exists idx_bb_contacts_owner on bookmarks_bro.contacts(owner_id);
+```
 
 ---
 
-## 6. Architecture invariants (never break)
+## 3. Сценарий Интеграции и Движок Подсказок (Real-Time Hints)
 
-1. **SSOT for metadata:** Postgres + pgvector 1536 (`bookmark_page_content`, `knowledge_items`).
-2. **Pipeline FSM:** `captured → enriched → indexed → searchable`.
-3. **Extension auth:** bootstrap Bearer only — **never** ship admin `X-API-Key` in extension.
-4. **DB env:** `BOOKMARKS_PGHOST` / `PGHOST` — not generic `DATABASE_URL` for BB stack.
-5. **OpenRouter models:** full ID only — `anthropic/claude-3.7-sonnet`, not `claude-3.7-sonnet`.
-6. **Obsidian export path:** `Autoro KB/ws-{workspace_id}`.
-7. **Hydrate merge:** empty server + local data → push up; else server wins.
+1. **Инициация звонка**:
+   Пользователь нажимает «Позвонить» на карточке контакта *John Doe* в интерфейсе Keept.
+   * Keept генерирует JWT-токены LiveKit, связывая сессию с ID контакта (`contact_id`).
+   * Открывается окно звонка Babylon Fish.
 
----
+2. **Загрузка контекста**:
+   Агент Babylon Fish при входе в комнату считывает `contact_id` из атрибутов сессии и запрашивает профиль контакта из таблицы `bookmarks_bro.contacts`, а также связанные с его тегами статьи из `bookmarks_bro.page_content`.
 
-## 7. API quick reference
-
-| Method | Path | Purpose |
-|--------|------|---------|
-| POST | `/api/v1/bookmarks/bootstrap` | Short-lived Bearer for extension |
-| POST | `/api/v1/bookmarks/auth/login` | Email login |
-| POST | `/api/v1/bookmarks/workspaces/ensure` | Create/return workspace id |
-| GET/PUT | `/api/v1/bookmarks/workspace-ui-state` | UI snapshot (ideas, reminders, KB) |
-| POST | `/api/v1/bookmarks/sync/start` | Extension bookmark sync job |
-| POST | `/api/v1/bookmarks/search` | Semantic/text search |
-| GET | `/api/v1/bookmarks/library/facets` | Category + tag facets |
-| POST | `/api/v1/knowledge/capture` | Ingest knowledge item |
-| POST | `/api/v1/keept/telegram/link-code` | Telegram link code (needs user JWT) |
-| GET | `/api/v1/keept/telegram/status` | Link status |
-
-Auth: `Authorization: Bearer <token>` or `X-API-Key` (admin only).
+3. **Анализ разговора и выдача подсказок (Hints Engine)**:
+   При обмене репликами, транскрибированный текст анализируется фоновым ИИ-агентом (Gemini 2.5 Flash). Он сравнивает контекст звонка, интересы контакта и базу знаний пользователя с текущей темой обсуждения и формирует лаконичные подсказки на экране.
+   * *Пример*: Собеседник говорит по-английски: *"We are looking for new investment opportunities in climate tech."*
+   * *Контекст контакта*: John Doe — венчурный партнер, интересующийся альтернативной энергетикой. Закладки пользователя содержат статью *"Top 10 European Climate Tech Startups 2026"*.
+   * *Результат*: На экране пользователя всплывает карточка-подсказка: 
+     💡 **Hint**: John Doe активно инвестирует в альтернативную энергию. Расскажите ему о европейских Climate Tech стартапах из ваших закладок!
 
 ---
 
-## 8. Cursor ↔ Antigravity sync workflow
+## 4. Задачи для Реализации (Твои Треки)
 
-### 8.1 Daily loop
+### Трек A: Бэкенд Умных Контактов в `agent-api/main.py`
+Реализовать REST API эндпоинты для управления контактами:
+* `GET /api/v1/keept/contacts` — получить список контактов пользователя.
+* `POST /api/v1/keept/contacts` — создать новый контакт.
+* `PUT /api/v1/keept/contacts/{id}` — обновить карточку и контекст контакта (`context_summary`).
+* `DELETE /api/v1/keept/contacts/{id}` — удалить контакт.
+* `GET /api/v1/keept/contacts/{id}/context-hints` — API, который вызывается бэкендом Babylon Fish для получения контекста и генерации подсказок на основе текущей темы разговора.
 
+### Трек B: Интерфейс Контактов в React (`src/bookmarksBro/`)
+* Разработать новую вкладку **Contacts** в приложении Keept.
+* Реализовать список контактов, форму добавления/редактирования, отображение блока **Contact Context Summary**.
+* Добавить на карточку контакта кнопку 📞 **Call with Babylon Fish**.
+* Сверстать окно активного вызова:
+  * Голосовой WebRTC-интерфейс (LiveKit).
+  * Бегущая лента синхронного перевода.
+  * Панель **Live Context Hints** (где на лету появляются подсказки от ИИ).
+
+### Трек C: Движок Подсказок в `ai-translator-backend/agent_adk_translator.py`
+* Внедрить новый узел графа **HintsEngineNode**, работающий параллельно с переводом.
+* При старте сессии получать `contact_id` из токена.
+* Посылать реплики разговора в фоновый ИИ-поток для генерации контекстных подсказок на основе данных Keept и Swoop.
+* Публиковать сгенерированные подсказки в топик данных LiveKit (или записывать в БД) для отображения на фронтенде.
+
+---
+
+## 5. Запуск и Тестирование
+
+### Запуск Keept (База знаний + Контакты)
+Из корня проекта `website`:
 ```bash
-# Antigravity — start of session
-cd ~/AuthRAG && git pull origin bookmarks-bro
-
-# After implementing in website (or if you edit AuthRAG directly):
-cd ~/Desktop/n8n/autoro.tech/website   # or WEBSITE_ROOT
-bash scripts/sync-keept-to-authrag.sh --apply --push
+npm run dev
 ```
 
-Dry-run first: `bash scripts/sync-keept-to-authrag.sh`
-
-### 8.2 Obsidian shared memory
-
-Both agents use Obsidian MCP:
-
-```
-search_vault: "Keep It For Me", "Bookmarks Bro", "keept"
-read_note: Autoro/Keep It For Me — Antigravity Handoff.md
-```
-
-After milestones: append to `Autoro/Bookmarks Bro Progress` or update handoff note.
-
-Physical vault sync: Syncthing (`docker-compose.syncthing.yml`).
-
-### 8.3 Skills (Antigravity)
-
+### Запуск Babylon Fish (Переводчик + Подсказки)
+Из папки `ai-translator-backend`:
 ```bash
-cd website && bash scripts/link-antigravity-skills.sh   # Cursor skills → ~/.gemini/antigravity/skills
+# Активировать окружение и запустить ADK-агента
+source .venv/bin/activate
+python3 agent_adk_translator.py dev
 ```
 
-| Task | Skills |
-|------|--------|
-| UI | `frontend-dev-guidelines`, `refero-cursor-warm-ivory` |
-| Multi-phase | `antigravity-workflows`, `supergoal` |
-| Debug API | `systematic-debugging` |
-| E2E extension | `playwright-skill` |
-| Babylon Fish Translation | `voice-ai-development`, `voice-agents`, `n8n-mcp-tools-expert` |
-
-Read `AGENTS.md` and `GEMINI.md` in website repo.
-
----
-
-## 8.4 Babylon Fish & Call Integrations Reference
-
-В папке `ai-translator-backend/` развернута кодовая база синхронного переводчика:
-* `agent_adk_translator.py` — неблокирующий перевод разговоров (RU ↔ EN) на базе LiveKit.
-* `call_integration.py` — скрипт подключения популярных приложений звонков и VoIP (SIP, RTMP, Virtual Audio Cables).
-* Подробные инструкции, руководства по тестированию и архитектура описаны в:
-  `docs/bookmarks-bro/BABYLON-FISH-GUIDE.md`
-
----
-
-## 9. Understand Anything — codebase knowledge graph
-
-**Repo:** [github.com/autorotech-tech/Understand-Anything](https://github.com/autorotech-tech/Understand-Anything)  
-(Fork of Egonex Understand Anything — interactive knowledge graph for any codebase.)
-
-### Install (once per machine)
-
+### Эмуляция звонка с контекстом
 ```bash
-cd website
-bash scripts/setup-understand-anything.sh
-# Restart Antigravity / Cursor
+# Запустить интеграционный скрипт с указанием контакта
+python3 call_integration.py ingress --room test-room --name zoom-stream
 ```
 
-Installs skills to:
-- Antigravity: `~/.gemini/antigravity/skills/` (via upstream `install.sh antigravity`)
-- Cursor: `~/.cursor/skills/skills/` + project `.agent/skills/`
-
-### Use on Keept slice (scoped — do not scan whole monorepo first time)
-
-```
-/understand src/bookmarksBro agent-api extensions/bookmarks-bro --language en
-/understand-dashboard
-/understand-chat How does workspace-ui-state sync work?
-/understand-domain
-/understand-diff
-```
-
-Output: `.understand-anything/knowledge-graph.json` + interactive dashboard.
-
-**When to re-run:** after large refactors in `agent-api/main.py` or `src/bookmarksBro/`.
-
----
-
-## 10. Verification commands
-
+Изменения автоматически зеркалируются в репозиторий `AuthRAG` для Antigravity с помощью команды:
 ```bash
-# Backend syntax
-python3 -m py_compile agent-api/main.py
-
-# Frontend (website root only)
-npm run build
-
-# Smoke (needs live agent-api + .env keys)
-npm run bookmarks-bro:smoke
-npm run bookmarks-bro:api-test
+npm run keept:sync-authrag:apply
 ```
-
-Extension: load unpacked `extensions/bookmarks-bro` — manifest version must be `0.3.1` (integers only, no `-testing` suffix).
-
----
-
-## 11. First message template (paste into Antigravity)
-
-```
-You are the Antigravity agent for Keep It For Me (keept.me).
-
-READ IN ORDER:
-1. docs/bookmarks-bro/ANTIGRAVITY-HANDOFF.md (this handoff)
-2. docs/bookmarks-bro/ANTIGRAVITY-KEEPT-BRIEF.md
-3. docs/bookmarks-bro/ANTIGRAVITY-SWOOP-KEEPT.md
-
-SETUP:
-- Clone AuthRAG branch bookmarks-bro OR work from synced website paths
-- bash scripts/setup-understand-anything.sh && restart IDE
-- bash scripts/link-antigravity-skills.sh
-- Obsidian: search_vault "Keep It For Me"
-
-SCOPE NOW: Phase 1 only
-- AUTH-SETUP.md (EN)
-- categories.json + normalize_tags + tests
-- EN UI + "Keep It For Me" branding in visible chrome
-- Search category/tag/RAG filters per brief §2.4
-- DO NOT rename bookmarks-bro code paths
-- DO NOT start Phase 2 JWT hardening unless Phase 1 checklist closed
-
-CODE MAP:
-/understand src/bookmarksBro agent-api extensions/bookmarks-bro --language en
-
-SYNC:
-After milestone → website/scripts/sync-keept-to-authrag.sh --apply --push
-```
-
----
-
-## 12. Related links
-
-| Resource | URL |
-|----------|-----|
-| Website repo | https://github.com/autorotech-tech/website |
-| AuthRAG mirror | https://github.com/autorotech-tech/AuthRAG (branch `bookmarks-bro`) |
-| Understand Anything | https://github.com/autorotech-tech/Understand-Anything |
-| Staging app | https://swoop.autoro.tech/bookmarks-bro |
-| BB Supabase (staging) | https://swoop.autoro.tech/bb-supabase |
-
----
-
-## 13. Decision log (recent)
-
-| Date | Decision |
-|------|----------|
-| 2026-06-16 | Product renamed user-facing to **Keep It For Me** / **keept.me**; code stays `bookmarks-bro` |
-| 2026-06-17 | GitHub `website` gets Antigravity docs; full monorepo push pending |
-| 2026-06-18 | `sync-keept-to-authrag.sh`, Understand Anything wired for Cursor + Antigravity |
-| 2026-06-18 | Extension manifest `0.3.1`; build label `0.1.1-testing` in `extension-config.js` |
