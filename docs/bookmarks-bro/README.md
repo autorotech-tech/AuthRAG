@@ -16,6 +16,9 @@ Product: **Keep It For Me** (Keept) · Domain: **keept.me** · Code: `bookmarks-
 
 | Doc | Topic |
 |-----|--------|
+| [KEEPT-DEVELOPMENT-STATUS.md](./KEEPT-DEVELOPMENT-STATUS.md) | **Фазы A–I, статус, команды npm** |
+| [ADK-WORKFLOW-HITL.md](./ADK-WORKFLOW-HITL.md) | ADK 2.0 capture graph + HITL |
+| [KAGGLE-CAPSTONE-KEEPT.md](./KAGGLE-CAPSTONE-KEEPT.md) | Capstone writeup + demo script |
 | [MATHEMATICAL-MODEL.md](./MATHEMATICAL-MODEL.md) | Scoring, RAG, enrichment model |
 | [ADMIN-MULTIUSER.md](./ADMIN-MULTIUSER.md) | Workspaces, Telegram, multi-user |
 | [TESTING.md](./TESTING.md) | Smoke tests, Chrome extension |

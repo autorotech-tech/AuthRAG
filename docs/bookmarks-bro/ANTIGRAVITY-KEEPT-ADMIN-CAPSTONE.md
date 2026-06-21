@@ -3,6 +3,8 @@
 **Product:** Keep It For Me (Keept) · **Domain:** keept.me  
 **Capstone:** [Vibe Coding Agents](https://www.kaggle.com/competitions/vibecoding-agents-capstone-project) · Concierge Agents · deadline **6 Jul 2026 PT**
 
+> **Статус (2026-06-20):** Phase A–D **завершены** (Antigravity). Tracks ниже — для доработок и Kaggle. Актуальный roadmap: [KEEPT-DEVELOPMENT-STATUS.md](./KEEPT-DEVELOPMENT-STATUS.md).
+
 ---
 
 ## Copy-paste в Antigravity (ручной режим)
@@ -180,11 +182,17 @@ Website-only:
 cd "/Users/vlad_x/Desktop/n8n/autoro.tech/website"
 npm run build
 npm run bookmarks-bro:smoke
+npm run keept:security:test    # ADK + agent-api security (из корня website)
+npm run keept:adk:playground   # ADK dev UI
 ```
 
----
+ADK agent (альтернатива — те же команды через npm выше):
 
-## Cloudflare & DNS
+```bash
+cd "/Users/vlad_x/Desktop/n8n/google intensive/keep-it-for-me"
+uv run pytest tests/unit/test_security.py -v
+make playground
+```
 
 Полная таблица записей, SSL, nginx, env для prod: **[CLOUDFLARE-KEEPT-DNS.md](./CLOUDFLARE-KEEPT-DNS.md)**
 
@@ -198,7 +206,7 @@ npm run build
 npm run keept:sync-authrag:apply
 ```
 
-Antigravity: `git pull` в AuthRAG, прочитать этот файл + `CLOUDFLARE-KEEPT-DNS.md`, начать Track A.
+Antigravity: `git pull` в AuthRAG branch `bookmarks-bro`. Phase A–D done — см. [KEEPT-DEVELOPMENT-STATUS.md](./KEEPT-DEVELOPMENT-STATUS.md). Дальше: staging E2E, Cloudflare, Kaggle video.
 
 ---
 
